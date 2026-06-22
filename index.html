@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Hesap Yöneticisi — Kontrol Paneli</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0a0e14;--panel:#11161f;--p2:#161c27;--line:#1f2733;--txt:#e6edf3;--muted:#7d8794;--faint:#4b5563;--amber:#ffb454;--up:#3fb950;--down:#f85149;--teal:#7fb0b1}
+  *{box-sizing:border-box;margin:0;padding:0}body{background:var(--bg);color:var(--txt);font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;padding:14px;max-width:1100px;margin:0 auto}
+  h1,h3{font-family:"Space Grotesk",system-ui,sans-serif}.muted{color:var(--muted)}.pos{color:var(--up)}.neg{color:var(--down)}.amb{color:var(--amber)}
+  .eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--teal)}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0}
+  input{font-family:inherit;background:var(--p2);border:1px solid var(--line);border-radius:8px;color:var(--txt);padding:9px 11px;font-size:13px}
+  button{font-family:inherit;font-weight:600;font-size:12px;background:var(--p2);border:1px solid var(--line);border-radius:8px;color:var(--txt);padding:9px 13px;cursor:pointer}
+  button:hover{border-color:var(--amber);color:var(--amber)}
+  button.danger{border-color:var(--down);color:var(--down)}button.danger:hover{background:rgba(248,81,73,.12)}
+  button.go{border-color:var(--up);color:var(--up)}
+  .vit{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:12px}
+  .cell{background:var(--panel);padding:12px 14px}.cell .l{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}.cell .b{font-family:"Space Grotesk";font-size:24px;font-weight:700;margin-top:5px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px}
+  h3{font-size:13px;margin-bottom:9px;display:flex;justify-content:space-between}
+  table{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:500;font-size:10px;text-transform:uppercase}
+  .badge{font-size:10px;padding:2px 7px;border-radius:5px;border:1px solid var(--line)}
+  .mkt{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}.coin{background:var(--p2);border:1px solid var(--line);border-left:3px solid var(--faint);border-radius:8px;padding:7px 9px;font-size:11px}
+  #log{max-height:300px;overflow:auto;display:flex;flex-direction:column-reverse;gap:5px;font-size:11px}
+  .ev{padding:6px 8px;border-radius:6px;background:var(--p2);border-left:3px solid var(--line)}.ev.buy{border-left-color:var(--up)}.ev.sell-win{border-left-color:var(--up)}.ev.sell-loss{border-left-color:var(--down)}.ev.warn{border-left-color:var(--amber)}.ev .t{color:var(--faint);font-size:9px}
+  @media(max-width:740px){.vit{grid-template-columns:1fr 1fr}.grid{grid-template-columns:1fr}.mkt{grid-template-columns:1fr 1fr}}
+  #gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;z-index:9}
+</style>
+</head>
+<body>
+  <div id="gate">
+    <div class="eyebrow">SURVIVE & GROW · KONTROL PANELİ</div>
+    <h1 style="font-size:22px">Panel Girişi</h1>
+    <input id="tok" placeholder="DASH_TOKEN" style="width:280px" autocomplete="off">
+    <button class="go" onclick="connect()">Bağlan</button>
+    <div class="muted" style="font-size:11px;max-width:320px;text-align:center">.env içindeki DASH_TOKEN ile gir. Anahtarın tarayıcıya değil yalnızca sunucuda durur.</div>
+  </div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <div><div class="eyebrow">SURVIVE & GROW · CANLI</div><h1 style="font-size:22px">Hesap Yöneticisi</h1></div>
+    <div id="modeBadge" class="badge">—</div>
+  </div>
+
+  <div class="vit">
+    <div class="cell"><div class="l">Varlık</div><div class="b" id="eq">—</div></div>
+    <div class="cell"><div class="l">Kâr / Zarar</div><div class="b" id="pnl">—</div></div>
+    <div class="cell"><div class="l">Nakit</div><div class="b" id="cash" style="font-size:18px">—</div></div>
+    <div class="cell"><div class="l">İşlem / Durum</div><div class="b" id="stat" style="font-size:18px">—</div></div>
+  </div>
+
+  <div class="bar">
+    <button id="pp" onclick="act('pause')">⏸ Duraklat</button>
+    <button class="danger" onclick="act('close-all')">Hepsini Kapat</button>
+    <button class="danger" onclick="if(confirm('PANİK: tüm pozisyonlar kapatılıp bot durdurulacak. Emin misin?'))act('panic')">⛔ PANİK</button>
+    <span style="margin-left:auto"></span>
+    <input id="buySym" placeholder="COIN (örn BTC)" style="width:130px;text-transform:uppercase">
+    <button class="go" onclick="manualBuy()">Elle AL</button>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h3>Açık Pozisyonlar <span class="muted" id="posN"></span></h3>
+      <table id="posT"><thead><tr><th>Coin</th><th>Giriş→Şimdi</th><th>Stop</th><th>P/Z</th><th></th></tr></thead><tbody></tbody></table>
+      <div class="muted" id="posEmpty" style="font-size:12px;padding:8px 2px">Açık pozisyon yok</div>
+      <h3 style="margin-top:14px">Piyasa <span class="muted" id="srcN"></span></h3>
+      <div class="mkt" id="mkt"></div>
+    </div>
+    <div class="panel">
+      <h3>İşlem Defteri</h3>
+      <div id="log"></div>
+    </div>
+  </div>
+  <div class="muted" style="font-size:11px;margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+    Bu araç senin Binance hesabını yönetir. <b class="amb">Yatırım tavsiyesi değildir</b>; kayıplar gerçektir. Önce <b>paper</b> ve <b>testnet</b> ile doğrula. Kill-switch ve PANİK butonu her zaman elinin altında.
+  </div>
+
+<script>
+let TOKEN="", ws=null;
+const $=id=>document.getElementById(id);
+const f=(n,d=2)=>Number(n).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const fpx=p=>p>=1000?p.toLocaleString("en-US",{maximumFractionDigits:0}):p>=1?p.toFixed(3):p<0.01?p.toFixed(6):p.toFixed(4);
+function connect(){ TOKEN=$("tok").value.trim(); if(!TOKEN)return;
+  try{ ws=new WebSocket((location.protocol==="https:"?"wss":"ws")+"://"+location.host+"/ws?token="+encodeURIComponent(TOKEN)); }catch(e){ alert("Bağlanılamadı"); return; }
+  ws.onmessage=ev=>{ try{ render(JSON.parse(ev.data)); $("gate").style.display="none"; }catch(e){} };
+  ws.onclose=()=>{ setTimeout(()=>{ if(TOKEN)connect(); },2000); };
+  ws.onerror=()=>{};
+}
+async function act(a){ try{ await fetch("/api/"+a,{method:"POST",headers:{"x-token":TOKEN,"Content-Type":"application/json"},body:"{}"}); }catch(e){} }
+async function manualBuy(){ const s=$("buySym").value.trim().toUpperCase(); if(!s)return; try{ const r=await fetch("/api/buy",{method:"POST",headers:{"x-token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({symbol:s})}); if(!r.ok){const j=await r.json();alert("Olmadı: "+(j.error||""));} $("buySym").value=""; }catch(e){} }
+async function manualSell(s){ if(!confirm(s+" pozisyonu kapatılsın mı?"))return; try{ await fetch("/api/sell",{method:"POST",headers:{"x-token":TOKEN,"Content-Type":"application/json"},body:JSON.stringify({symbol:s})}); }catch(e){} }
+function render(d){
+  $("modeBadge").textContent=(d.mode||"").toUpperCase()+(d.killed?" · KILL":d.running?" · ÇALIŞIYOR":" · DURDU");
+  $("modeBadge").style.color=d.mode==="live"?"var(--down)":d.mode==="testnet"?"var(--amber)":"var(--teal)";
+  $("eq").textContent=f(d.equity)+" "+d.quote; $("eq").className="b "+(d.equity>=d.start?"pos":"neg");
+  $("pnl").textContent=(d.pnlPct>=0?"+":"")+f(d.pnlPct)+"%"; $("pnl").className="b "+(d.pnlPct>=0?"pos":"neg");
+  $("cash").textContent=f(d.cash); $("stat").textContent=d.trades+" · "+(d.killed?"KILL":d.running?"●":"⏸");
+  $("pp").textContent=d.running?"⏸ Duraklat":"▶ Devam"; $("pp").onclick=()=>act(d.running?"pause":"resume");
+  $("srcN").textContent=d.univ+" coin"; $("posN").textContent=d.positions.length+" açık";
+  const tb=$("posT").querySelector("tbody"); tb.innerHTML="";
+  $("posEmpty").style.display=d.positions.length?"none":"block";
+  d.positions.forEach(p=>{ const upct=p.cost?(p.upnl/p.cost*100):0; const tr=document.createElement("tr");
+    tr.innerHTML=`<td><b>${p.base}</b></td><td>${fpx(p.entry)}→${fpx(p.price)}</td><td class="muted">${fpx(p.stopLvl)}</td>`+
+      `<td class="${p.upnl>=0?'pos':'neg'}">${p.upnl>=0?'+':''}${f(p.upnl)} (${upct>=0?'+':''}${upct.toFixed(2)}%)</td>`+
+      `<td><button class="danger" style="padding:4px 9px" onclick="manualSell('${p.base}')">Sat</button></td>`;
+    tb.appendChild(tr); });
+  const m=$("mkt"); m.innerHTML=""; d.market.forEach(x=>{ const c=document.createElement("div"); c.className="coin";
+    c.style.borderLeftColor=x.held?"var(--amber)":x.score>=0.3?"var(--up)":x.score>=0.1?"#b8823a":"var(--faint)";
+    c.innerHTML=`<b>${x.base}</b>${x.held?' <span class="amb">●</span>':''}<br>${fpx(x.price)}<br><span class="${x.chg>=0?'pos':'neg'}">${x.chg>=0?'▲':'▼'}${Math.abs(x.chg).toFixed(1)}%</span> <span class="muted">S${x.score>=0?'+':''}${x.score.toFixed(2)}</span>`;
+    m.appendChild(c); });
+  const lg=$("log"); lg.innerHTML=""; d.log.forEach(e=>{ const el=document.createElement("div"); el.className="ev "+(e.type||"");
+    el.innerHTML=`<span class="t">${new Date(e.ts).toLocaleTimeString()}</span> <b>${e.action}</b> — ${e.detail}`; lg.appendChild(el); });
+}
+</script>
+</body>
+</html>
