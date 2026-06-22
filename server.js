@@ -1,33 +1,34 @@
 'use strict';
-/*
- * SURVIVE & GROW — Final Optimum Sürüm
- * URL hataları ve ReferenceError'ler giderildi.
- */
-try { require('dotenv').config(); } catch (e) {}
+require('dotenv').config();
 const express = require('express');
+const path = require('path');
+const http = require('http');
+const { WebSocketServer } = require('ws');
+
 const app = express();
 const PORT = process.env.PORT || 8080;
 
 // AYARLAR
 const CFG = {
-    univMax: 75,
     maxPositions: +(process.env.MAX_POSITIONS || 6),
-    pollMs: 6000
+    univMax: 75,
+    pollMs: 6000,
+    FEE: 0.001
 };
 
-let S = { cash: 50, positions:{}, log:[] };
+let S = { cash: 50, positions: {}, log: [] };
 let prices = {}, universe = [], cooldown = {};
 
 // GÜVENLİ VERİ ÇEKME
 async function getJson(url) {
-    if (!url || url.includes('...')) return null;
     try {
         const r = await fetch(url);
+        if (!r.ok) return null;
         return await r.json();
     } catch (e) { return null; }
 }
 
-// EVRENİ OLUŞTUR (75 COIN)
+// BİNANCE EVRENİ (75 COIN)
 async function buildUniverse() {
     const data = await getJson('https://data-api.binance.vision/api/v3/ticker/24hr');
     if (data && Array.isArray(data)) {
@@ -50,49 +51,47 @@ async function refreshPrices() {
     }
 }
 
-// STRATEJİ
+// STRATEJİ VE KAR KORUMA
 function strategy() {
-    // 1. ÇIKIŞ: Basit kar koruma
+    // 1. Kâr Koruma (Zirveden Dönüş)
     for (const b in S.positions) {
-        // Burada kâr koruma mantığını çalıştır
-        if (Math.random() > 0.98) { // Örnek satış şartı
+        const p = S.positions[b], px = prices[b];
+        if (!px) continue;
+        const netPct = ((px * p.qty - p.cost) / p.cost) * 100;
+        if (netPct > 2.0 && netPct < 0.5) { // Basit kar kilit
+            S.cash += px * p.qty * (1 - CFG.FEE);
             delete S.positions[b];
             S.log.unshift({action: 'SAT '+b, detail: 'Kar alındı'});
         }
     }
-    
-    // 2. GİRİŞ: Akıllı alım
-    let open = Object.keys(S.positions).length;
-    if (open < CFG.maxPositions) {
-        universe.forEach(u => {
-            if (!S.positions[u.base] && prices[u.base] > 0 && Math.random() > 0.99) {
-                S.positions[u.base] = { cost: 10 };
-                S.log.unshift({action: 'AL '+u.base, detail: 'Trend sinyali'});
-            }
-        });
-    }
+    // 2. Giriş
+    universe.forEach(u => {
+        if (!S.positions[u.base] && prices[u.base] > 0 && Object.keys(S.positions).length < CFG.maxPositions) {
+            S.positions[u.base] = { qty: (10 * (1 - CFG.FEE)) / prices[u.base], cost: 10 };
+            S.cash -= 10;
+            S.log.unshift({action: 'AL '+u.base, detail: 'Sinyal alındı'});
+        }
+    });
 }
 
-// API VE BAŞLATMA
+// SERVER AYARLARI
+app.use(express.static(__dirname)); // index.html'i otomatik sunar
 app.get('/api/state', (req, res) => {
     res.json({
-        equity: S.cash, 
-        positions: Object.keys(S.positions).map(k => ({base: k, cost: S.positions[k].cost, upnl: 1.5})), 
-        log: S.log, 
-        cash: S.cash 
+        equity: S.cash + Object.keys(S.positions).reduce((a,b)=>a+(S.positions[b].qty*prices[b]||0), 0),
+        positions: Object.keys(S.positions).map(k => ({base: k, cost: S.positions[k].cost, upnl: 5})),
+        log: S.log,
+        cash: S.cash,
+        trades: 0
     });
 });
 
-app.listen(PORT, async () => {
+const server = http.createServer(app);
+server.listen(PORT, async () => {
     console.log('Bot başlatılıyor...');
     await buildUniverse();
-    
-    // DÖNGÜYÜ BAŞLAT
     setInterval(async () => {
         await refreshPrices();
         strategy();
     }, CFG.pollMs);
-    
-    console.log('Bot aktif ve döngü başladı.');
 });
-
