@@ -1,10 +1,8 @@
 'use strict';
 /*
  * SURVIVE & GROW — Binance hesap yoneticisi (backend)
- * Modlar: paper (sahte para/gercek fiyat) | testnet | live (GERCEK PARA)
- * Strateji: trend filtresi + RSI/MACD/StochRSI/Bollinger + ATR'ye gore trailing stop, sermaye dilimleme.
- * Guvenlik: gun-ici kayip kill-switch, max islem siniri, sadece spot, manuel mudahale.
- * UYARI: Bu yatirim tavsiyesi degildir. Once paper -> testnet -> kucuk live ile dogrula.
+ * YENI SURUM: 5m Mumlar, OHLCV verisi, ATR ve Dinamik Chandelier Exit eklendi.
+ * Modlar: paper | testnet | live
  */
 try { require('dotenv').config(); } catch (e) {}
 const fs = require('fs');
@@ -47,7 +45,7 @@ const isStable = (s,p,c)=>{ s=(s||'').toLowerCase();
 let S = {
   mode: CFG.mode, running: true, cash: CFG.startCash, positions: {}, trades: 0,
   peak: CFG.startCash, equityHist: [CFG.startCash], dayStartEquity: CFG.startCash, dayKey: dayKey(),
-  killed: false, log: [], startedAt: Date.now(), lastError: '',
+  killed: false, log: [], startedAt: Date.now(), lastError: '', lastKlineFetch: 0
 };
 function dayKey(){ return new Date().toISOString().slice(0,10); }
 process.on('unhandledRejection', (e)=>{ try{ S.lastError='unhandled: '+String(e&&e.message||e); }catch(_){} console.error('unhandledRejection:', e&&e.message||e); });
@@ -57,18 +55,19 @@ function saveState(){ try{ fs.writeFileSync(STATE_FILE, JSON.stringify(S)); }cat
 function log(type, action, detail){ const e={ ts:Date.now(), type, action, detail }; S.log.push(e); if(S.log.length>200)S.log.shift(); console.log(`[${new Date().toISOString()}] ${type.toUpperCase()} ${action} — ${detail}`); }
 
 // ---------- BORSA / VERI ----------
-const BN = 'https://data-api.binance.vision';     // Binance public market data (cografi engelsiz + yuksek limit, 429 yok)
-let tradeEx = null;                               // ccxt (dinamik import) yalniz testnet/live icin initData'da kurulur
+const BN = 'https://data-api.binance.vision'; 
+let tradeEx = null;                               
 
 // ---------- PIYASA VERISI ----------
-let universe = [];          // [{base, pair}]
+let universe = [];          
 let prices = {}, chg = {}, hist = {}, startPx = {}, scoreS = {}, cooldown = {};
 const COOLDOWN_MS = 20000;
 let lastFetch = 0, lastLoopErr = '';
 
-async function fetchJSON(url){ const r=await fetch(url,{headers:{'accept':'application/json','user-agent':'survive-grow-bot/1.0'}}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+async function fetchJSON(url){ const r=await fetch(url,{headers:{'accept':'application/json','user-agent':'survive-grow-bot/2.0'}}); if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }
+
 async function buildUniverse(){
-  const d = await fetchJSON(BN+'/api/v3/ticker/24hr');     // tum semboller (tek istek)
+  const d = await fetchJSON(BN+'/api/v3/ticker/24hr');     
   const rows=[];
   for(const t of d){ const s=t.symbol; if(!s||!s.endsWith('USDT')||/(UP|DOWN|BULL|BEAR)USDT$/.test(s)) continue;
     const base=s.slice(0,-4), price=parseFloat(t.lastPrice), vol=parseFloat(t.quoteVolume), c=parseFloat(t.priceChangePercent);
@@ -80,24 +79,51 @@ async function buildUniverse(){
   if(u2.length<5) throw new Error('evren kucuk');
   universe=u2;
   log('info','Evren hazir', universe.length+' coin (Binance, hacme gore, stablecoin haric).');
-  seedHistory().catch(()=>{});   // gecmisi arka planda klines ile besle
+  await seedHistory(); 
 }
+
 async function seedHistory(){
   for(const u of universe){
-    if(hist[u.base] && hist[u.base].length>=40) continue;
-    try{ const k=await fetchJSON(BN+'/api/v3/klines?symbol='+u.sym+'&interval=1m&limit=100'); if(Array.isArray(k)&&k.length) hist[u.base]=k.map(x=>parseFloat(x[4])); }
-    catch(e){ if(!hist[u.base]) hist[u.base]=Array(30).fill(prices[u.base]||1); }
+    try{ 
+      // YENI: 1m yerine 5m kullanıyoruz ve OHLCV verisini obje olarak tutuyoruz
+      const k=await fetchJSON(BN+'/api/v3/klines?symbol='+u.sym+'&interval=5m&limit=100'); 
+      if(Array.isArray(k)&&k.length) {
+        hist[u.base] = k.map(x=>({ 
+            h: parseFloat(x[2]), 
+            l: parseFloat(x[3]), 
+            c: parseFloat(x[4]), 
+            v: parseFloat(x[5]) 
+        })); 
+      }
+    }
+    catch(e){ 
+      if(!hist[u.base]) hist[u.base] = Array(30).fill({h: prices[u.base]||1, l: prices[u.base]||1, c: prices[u.base]||1, v: 0}); 
+    }
   }
-  log('info','Gecmis yuklendi','Indikatorler 1 dakikalik mumlarla hazir.');
+  S.lastKlineFetch = Date.now();
+  log('info','Gecmis yuklendi','Indikatorler 5 dakikalik gercek mumlarla hazir.');
 }
+
 async function refreshPrices(){
   if(!universe.length) return;
   const syms = encodeURIComponent(JSON.stringify(universe.map(u=>u.sym)));
   const d = await fetchJSON(BN+'/api/v3/ticker/24hr?symbols='+syms);
   const map={}; universe.forEach(u=>map[u.sym]=u.base);
-  for(const t of d){ const b=map[t.symbol]; if(!b) continue; const p=parseFloat(t.lastPrice);
-    if(isFinite(p)&&p>0){ prices[b]=p; chg[b]=parseFloat(t.priceChangePercent)||chg[b]||0;
-      if(!hist[b]) hist[b]=Array(30).fill(p); else { hist[b].push(p); if(hist[b].length>220) hist[b].shift(); } } }
+  for(const t of d){ 
+      const b=map[t.symbol]; if(!b) continue; const p=parseFloat(t.lastPrice);
+      if(isFinite(p)&&p>0){ 
+          prices[b]=p; 
+          chg[b]=parseFloat(t.priceChangePercent)||chg[b]||0;
+          
+          // YENI: Her 6 saniyede bir yeni mum eklemek yerine, MEVCUT son mumun fiyatlarini guncelliyoruz
+          if(hist[b] && hist[b].length > 0) { 
+              const last = hist[b][hist[b].length-1];
+              last.c = p;
+              if (p > last.h) last.h = p;
+              if (p < last.l) last.l = p;
+          } 
+      } 
+  }
 }
 
 // ---------- INDIKATORLER ----------
@@ -110,8 +136,39 @@ function macd(a){ const f=emaArr(a,12),s=emaArr(a,26); if(!f||!s) return null; c
 function stochRsi(a,len=14){ const rs=rsiArr(a,len); if(!rs) return null; const v=rs.filter(x=>x!=null); if(v.length<len) return null; const w=v.slice(-len),cur=w[w.length-1],mn=Math.min(...w),mx=Math.max(...w); return mx===mn?0.5:(cur-mn)/(mx-mn); }
 function boll(a,p=20,m=2){ if(a.length<p) return null; const w=a.slice(-p),mean=w.reduce((x,y)=>x+y,0)/p; const sd=Math.sqrt(w.reduce((x,y)=>x+(y-mean)*(y-mean),0)/p),up=mean+m*sd,lo=mean-m*sd,price=a[a.length-1]; return { pctB:up===lo?0.5:(price-lo)/(up-lo) }; }
 function rangePct(a,p=20){ if(a.length<p) return 0.02; const w=a.slice(-p),mx=Math.max(...w),mn=Math.min(...w),mean=w.reduce((x,y)=>x+y,0)/p; return mean>0?(mx-mn)/mean:0.02; }
-function analyze(b){ const h=hist[b]; if(!h||h.length<30) return null;
-  const price=h[h.length-1], r=rsiVal(h,14), m=macd(h), ef=emaVal(h,9), es=emaVal(h,21), el=emaVal(h,50), bb=boll(h,20,2), sr=stochRsi(h,14), roc=(price-h[h.length-6])/h[h.length-6], c=chg[b]||0;
+
+// YENI: Gercek Volatilite (ATR) Indikatoru
+function calcATR(hData, len = 14) {
+    if (hData.length < len + 1) return null;
+    let tr = [];
+    for (let i = 1; i < hData.length; i++) {
+        let hl = hData[i].h - hData[i].l;
+        let hc = Math.abs(hData[i].h - hData[i-1].c);
+        let lc = Math.abs(hData[i].l - hData[i-1].c);
+        tr.push(Math.max(hl, hc, lc));
+    }
+    let atr = tr.slice(0, len).reduce((a,b)=>a+b,0) / len;
+    for(let i = len; i < tr.length; i++) atr = (atr * (len - 1) + tr[i]) / len;
+    return atr;
+}
+
+// YENI: Chandelier Exit (Dinamik Stop Indikatoru)
+function chandelierExit(hData, atr, period = 22, multiplier = 3.0) {
+    if (hData.length < period || !atr) return null;
+    const recent = hData.slice(-period);
+    const highestHigh = Math.max(...recent.map(x => x.h));
+    return highestHigh - (atr * multiplier); 
+}
+
+function analyze(b){ 
+  const h=hist[b]; if(!h||h.length<30) return null;
+  // Sadece kapanis fiyatlarini eski indikatorlere gonder
+  const cArr = h.map(x => x.c);
+  const price=cArr[cArr.length-1], r=rsiVal(cArr,14), m=macd(cArr), ef=emaVal(cArr,9), es=emaVal(cArr,21), el=emaVal(cArr,50), bb=boll(cArr,20,2), sr=stochRsi(cArr,14), roc=(price-cArr[cArr.length-6])/cArr[cArr.length-6], c=chg[b]||0;
+  
+  const currentAtr = calcATR(h, 14);
+  const vp = currentAtr ? (currentAtr / price) : rangePct(cArr,20); // Pozisyon buyuklugu icin daha saglikli volatilite
+  
   let score=0; const why=[];
   if(ef!=null&&es!=null){ if(ef>es){score+=0.20;why.push('EMA9>EMA21');} else score-=0.15; }
   if(el!=null&&price>el){score+=0.10;why.push('EMA50 ustu');} else if(el!=null) score-=0.08;
@@ -122,7 +179,7 @@ function analyze(b){ const h=hist[b]; if(!h||h.length<30) return null;
   if(roc>0.004){score+=0.10;why.push('momentum+');} else if(roc<-0.012)score-=0.08;
   if(c<-9)score-=0.06; else if(c>0&&c<18)score+=0.03;
   const trendUp=(ef!=null&&es!=null&&ef>es)&&(el==null||price>el)&&(es>0&&(ef-es)/es>0.0003);
-  return { score, r, why, price, trendUp, vp:rangePct(h,20) };
+  return { score, r, why, price, trendUp, vp };
 }
 
 // ---------- EMIRLER ----------
@@ -141,9 +198,9 @@ async function placeBuy(base, costUsdt, a, M){
 function openLedger(base, qty, px, cost, a, M){
   const vp=a&&a.vp?a.vp:0.02;
   const stop=clamp(M.stopMult*vp,0.008,0.030), trail=clamp(M.trailMult*vp,0.006,0.035), act=clamp(M.actMult*vp,0.008,0.020), tp=clamp(3.0*stop,0.030,0.120);
-  S.positions[base]={ qty, entry:px, cost, high:px, openTs:Date.now(), stop, trail, act, tp };
+  S.positions[base]={ qty, entry:px, cost, high:px, openTs:Date.now(), stop, trail, act, tp, dynStop: 0 };
   S.trades++;
-  log('buy','AL '+base, `${cost.toFixed(2)} ${CFG.quote} @ ${px} — skor ${(scoreS[base]||0).toFixed(2)} · ${(a?a.why.slice(0,3).join(', '):'sinyal')} · stop -%${(stop*100).toFixed(1)} / hedef +%${(tp*100).toFixed(1)}`);
+  log('buy','AL '+base, `${cost.toFixed(2)} ${CFG.quote} @ ${px} — skor ${(scoreS[base]||0).toFixed(2)} · ${(a?a.why.slice(0,3).join(', '):'sinyal')} · stop -%${(stop*100).toFixed(1)}`);
 }
 async function placeSell(base, why){
   const p = S.positions[base]; if(!p) return; const pair=base+'/'+CFG.quote, px=prices[base]||p.entry;
@@ -162,29 +219,52 @@ function strategy(){
   if(eq<CFG.startCash*0.35){ maxPos=Math.max(1,maxPos-1); entry+=0.05; }
   const ana={};
   for(const u of universe){ const a=analyze(u.base); ana[u.base]=a; if(a){ scoreS[u.base]= scoreS[u.base]==null?a.score:scoreS[u.base]*0.6+a.score*0.4; } }
-  // CIKISLAR
+  
+  // YENI: DINAMIK CIKISLAR (ATR + Chandelier)
   for(const b of Object.keys(S.positions)){
     const p=S.positions[b], px=prices[b]; if(!px) continue; if(px>p.high)p.high=px;
-    const gross=(px-p.entry)/p.entry, net=gross-2*FEE, ss=scoreS[b]!=null?scoreS[b]:0, heldMs=Date.now()-p.openTs; let why=null;
-    if(px<=p.entry*(1-p.stop)) why='zarar-kes';
-    else if(px>=p.entry*(1+p.tp)) why='hedef';
-    else if(heldMs>2*CFG.pollMs && p.high>=p.entry*(1+p.act) && px<=p.high*(1-p.trail)) why='trailing stop';
-    else if(heldMs>8*CFG.pollMs && ss<=-0.30) why='momentum oldu';
+    
+    const hData = hist[b];
+    const currentAtr = hData ? calcATR(hData, 14) : null;
+    if(currentAtr) {
+        const dStop = chandelierExit(hData, currentAtr, 22, 2.5);
+        if (dStop) {
+            // Trailing ozelligi: Stop noktasi sadece yukari cikar, fiyat dusse de asagi inmez
+            p.dynStop = Math.max(p.dynStop || 0, dStop);
+        }
+    }
+
+    const gross=(px-p.entry)/p.entry, net=gross-2*FEE, ss=scoreS[b]!=null?scoreS[b]:0, heldMs=Date.now()-p.openTs; 
+    let why=null;
+    
+    // 1. Dinamik Stop Kırıldıysa (ATR Trailing)
+    if (p.dynStop && px <= p.dynStop) why = 'atr-dinamik-stop';
+    // 2. Trend ve Momentum tamamen cöktüyse erken kaçış
+    else if(heldMs>8*CFG.pollMs && ss<=-0.30) why = 'momentum-oldu';
+    // 3. Fallback: Eger indikator henuz hesaplanmadiysa eski yontemle koru
+    else if(!p.dynStop) {
+        if(px<=p.entry*(1-p.stop)) why='zarar-kes';
+        else if(px>=p.entry*(1+p.tp)) why='hedef';
+        else if(heldMs>2*CFG.pollMs && p.high>=p.entry*(1+p.act) && px<=p.high*(1-p.trail)) why='trailing-stop';
+    }
+
     if(why) queue(()=>placeSell(b, `${why} (%${(net*100).toFixed(2)})`));
   }
-  // GIRISLER (sadece trend yukari + skor esik; konviksiyona gore boyut; sermaye dilimleme)
+  
+  // GIRISLER
   let open=Object.keys(S.positions).length;
   const minOrder = (S.mode==='paper')?DUST:CFG.minNotional;
-  let avail = S.cash;   // bu tik icin yerel kullanilabilir nakit (S.cash iki kez dusulmesin)
+  let avail = S.cash;   
   const cand=universe.map(u=>u.base).filter(b=>!S.positions[b]&&prices[b]&&!isStable(b,prices[b],chg[b])&&(!cooldown[b]||Date.now()>cooldown[b])&&ana[b]&&ana[b].trendUp&&scoreS[b]!=null&&scoreS[b]>=entry).sort((x,y)=>scoreS[y]-scoreS[x]);
   for(const b of cand){ if(open>=maxPos) break;
-    const conv=clamp(0.6+(scoreS[b]-entry)*1.5,0.6,1.0);            // yuksek skor -> daha buyuk (dilim icinde)
+    const conv=clamp(0.6+(scoreS[b]-entry)*1.5,0.6,1.0);            
     let size=Math.min(equity()/maxPos*conv, avail*0.99);
     if(size<minOrder) continue;
-    queue(()=>placeBuy(b, size, ana[b], M)); open++; avail-=size; // YALNIZ yerel rezervasyon; gercek dusum placeBuy'da
+    queue(()=>placeBuy(b, size, ana[b], M)); open++; avail-=size; 
   }
 }
-// emir kuyrugu: ayni dongude paralel borsa cagrilarini sirayla calistirir
+
+// emir kuyrugu
 let q=Promise.resolve();
 function queue(fn){ q=q.then(fn).catch(e=>{ S.lastError=String(e&&e.message||e); log('warn','Emir hatasi', S.lastError); }); }
 
@@ -193,9 +273,14 @@ async function loop(){
   try{
     if(!universe.length){ await buildUniverse(); }
     if(dayKey()!==S.dayKey){ S.dayKey=dayKey(); S.dayStartEquity=equity(); S.killed=false; log('info','Yeni gun','Gun-ici kayip sayaci sifirlandi.'); }
+    
+    // YENI: Her 5 dakikada bir gercek klines gecmisini yenile (Mumlarin kapanmasini senkronize etmek icin)
+    if (Date.now() - S.lastKlineFetch > 5 * 60 * 1000) {
+        await seedHistory();
+    }
     await refreshPrices();
+    
     const eq=equity();
-    // kill-switch: gun-ici kayip
     if(!S.killed && eq <= S.dayStartEquity*(1-CFG.dailyLossStop)){
       S.killed=true; S.running=false;
       log('warn','KILL-SWITCH', `Gun-ici kayip %${(CFG.dailyLossStop*100).toFixed(0)} asildi. Tum pozisyonlar kapatiliyor, bot durduruldu.`);
@@ -214,7 +299,7 @@ function snapshot(){ const eq=equity(); return {
   mode:S.mode, running:S.running, killed:S.killed, equity:eq, cash:S.cash, peak:S.peak, start:CFG.startCash,
   pnlPct:(eq-CFG.startCash)/CFG.startCash*100, trades:S.trades, quote:CFG.quote, univ:universe.length,
   positions:Object.entries(S.positions).map(([b,p])=>({ base:b, entry:p.entry, price:prices[b]||p.entry, qty:p.qty, cost:p.cost,
-    upnl:(prices[b]||p.entry)*p.qty-p.cost, stopLvl:(p.high>=p.entry*(1+p.act))?p.high*(1-p.trail):p.entry*(1-p.stop) })),
+    upnl:(prices[b]||p.entry)*p.qty-p.cost, stopLvl:p.dynStop ? p.dynStop : ((p.high>=p.entry*(1+p.act))?p.high*(1-p.trail):p.entry*(1-p.stop)) })),
   market:universe.map(u=>({ base:u.base, price:prices[u.base], chg:chg[u.base]||0, score:scoreS[u.base]||0, held:!!S.positions[u.base] }))
     .filter(x=>x.price).sort((a,b)=>(b.held-a.held)||(b.score-a.score)).slice(0,18),
   equityHist:S.equityHist.slice(-160), log:S.log.slice(-60), lastError:S.lastError };
@@ -242,8 +327,8 @@ function start(){
   log('info','Baslatiliyor', `mod=${CFG.mode} · risk=${CFG.riskMode} · evren=${CFG.univMax} · maxPoz=${CFG.maxPositions}`);
   if(CFG.mode==='live') log('warn','GERCEK PARA', 'LIVE modundasin — gercek fonlarla islem yapilacak. Kucuk basla.');
   loadState();
-  server.listen(CFG.port, ()=>log('info','Panel hazir', `port ${CFG.port} dinleniyor (token ile gir)`)); // ONCE portu ac
-  initData();                                                                                            // veri + dongu arka planda
+  server.listen(CFG.port, ()=>log('info','Panel hazir', `port ${CFG.port} dinleniyor (token ile gir)`)); 
+  initData();                                                                                            
 }
 async function initData(){
   try{
