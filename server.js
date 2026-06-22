@@ -8,20 +8,24 @@ const { WebSocketServer } = require('ws');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// AYARLAR
+// --- AYARLAR ---
 const CFG = {
+    mode: (process.env.MODE || 'paper').toLowerCase(),
     maxPositions: +(process.env.MAX_POSITIONS || 6),
     univMax: +(process.env.UNIVERSE || 75),
-    pollMs: 6000,
+    pollMs: +(process.env.POLL_MS || 6000),
     FEE: 0.001,
-    token: process.env.DASH_TOKEN || 'change-me',
-    startCash: +(process.env.START_CASH || 50)
+    token: process.env.DASH_TOKEN || 'change-me', // HATA BURADAYDI, EKLENDİ!
+    startCash: +(process.env.START_CASH || 50),
+    key: process.env.BINANCE_KEY || '',
+    secret: process.env.BINANCE_SECRET || ''
 };
 
 let S = { cash: CFG.startCash, positions: {}, log: [], trades: 0 };
 let prices = {}, universe = [], hist = {}, cooldown = {};
+let tradeEx = null;
 
-// GÜVENLİ VERİ ÇEKME
+// --- GÜVENLİ VERİ ÇEKME ---
 async function getJson(url) {
     if (!url || url.includes('...')) return null;
     try {
@@ -31,11 +35,11 @@ async function getJson(url) {
     } catch (e) { return null; }
 }
 
-// BİNANCE EVRENİ VE GEÇMİŞİ (75 COIN)
+// --- BİNANCE EVRENİ VE GEÇMİŞİ (75 COIN) ---
 async function buildUniverse() {
     const data = await getJson('https://data-api.binance.vision/api/v3/ticker/24hr');
     if (data && Array.isArray(data)) {
-        universe = data.filter(t => t.symbol.endsWith('USDT'))
+        universe = data.filter(t => t.symbol.endsWith('USDT') && !['USDCUSDT','FDUSDUSDT','TUSDUSDT'].includes(t.symbol))
                        .map(t => ({ base: t.symbol.slice(0, -4), sym: t.symbol, vol: parseFloat(t.quoteVolume) }))
                        .sort((a, b) => b.vol - a.vol)
                        .slice(0, CFG.univMax);
@@ -50,7 +54,7 @@ async function buildUniverse() {
     }
 }
 
-// FİYAT GÜNCELLEME VE MUM GÜNCELLEMESİ
+// --- FİYAT GÜNCELLEME ---
 async function refreshPrices() {
     const data = await getJson('https://data-api.binance.vision/api/v3/ticker/24hr');
     if (data && Array.isArray(data)) {
@@ -70,7 +74,7 @@ async function refreshPrices() {
     }
 }
 
-// İNDİKATÖRLER VE MATEMATİK
+// --- İNDİKATÖRLER VE MATEMATİK ---
 function calcHMA(a, p=55) {
     if(a.length < p) return null;
     let wma = (arr, len) => arr.map((_,i,ar)=>{ if(i<len-1)return null; let s=0, n=0.5*len*(len+1); for(let j=0;j<len;j++) s+=ar[i-j]*(j+1); return s/n; });
@@ -119,14 +123,60 @@ function analyze(b) {
     return { score, trendUp: score >= 0.40 };
 }
 
-// STRATEJİ VE KAR KORUMA
+// --- EMİRLER ---
+async function placeBuy(b, cost) {
+    const px = prices[b];
+    if(CFG.mode === 'paper') {
+        const qty = (cost * (1 - CFG.FEE)) / px;
+        S.cash -= cost;
+        S.positions[b] = { qty, cost, entry: px, high: px };
+        S.trades++;
+        S.log.unshift({action: 'AL '+b, detail: 'Trend Onayı (ADX/VWAP)'});
+    } else if (tradeEx) {
+        try {
+            const o = await tradeEx.createMarketBuyOrderWithCost(b+'/USDT', cost);
+            const filledQty = o.filled || (o.amount || 0);
+            const spent = o.cost || cost;
+            const avg = o.average || px;
+            S.cash -= spent;
+            S.positions[b] = { qty: filledQty, cost: spent, entry: avg, high: avg };
+            S.trades++;
+            S.log.unshift({action: 'AL '+b, detail: 'Gerçek Emir İletildi'});
+        } catch(e) { S.log.unshift({action: 'HATA', detail: 'Alım başarısız: ' + e.message}); }
+    }
+}
+
+async function placeSell(b, why) {
+    const p = S.positions[b];
+    const px = prices[b] || p.entry;
+    
+    if (CFG.mode === 'paper') {
+        const gross = p.qty * px;
+        const net = gross * (1 - CFG.FEE);
+        S.cash += net;
+        delete S.positions[b];
+        cooldown[b] = Date.now() + (15 * 60 * 1000);
+        S.log.unshift({action: 'SAT '+b, detail: why});
+    } else if (tradeEx) {
+        try {
+            const o = await tradeEx.createMarketSellOrder(b+'/USDT', p.qty);
+            const gross = o.cost || (p.qty * px);
+            const fee = (o.fee && o.fee.cost) || (gross * CFG.FEE);
+            S.cash += (gross - fee);
+            delete S.positions[b];
+            cooldown[b] = Date.now() + (15 * 60 * 1000);
+            S.log.unshift({action: 'SAT '+b, detail: why + ' (Gerçek Emir)'});
+        } catch(e) { S.log.unshift({action: 'HATA', detail: 'Satış başarısız: ' + e.message}); }
+    }
+}
+
+// --- STRATEJİ VE KAR KORUMA ---
 function strategy() {
-    // 1. ÇIKIŞ: Kâr Koruma ve Stop
     for (const b in S.positions) {
         const p = S.positions[b], px = prices[b];
         if (!px) continue;
         
-        if (px > p.high) p.high = px; // Zirveyi güncelle
+        if (px > p.high) p.high = px; 
         
         const netPct = ((px * p.qty - p.cost - (p.cost * CFG.FEE * 2)) / p.cost) * 100;
         const peakPct = ((p.high * p.qty - p.cost - (p.cost * CFG.FEE * 2)) / p.cost) * 100;
@@ -134,17 +184,11 @@ function strategy() {
         let why = null;
         if (peakPct >= 2.5 && netPct <= peakPct - 0.8) why = 'Zirveden Dönüş (Kar Kilitlendi)';
         else if (peakPct >= 1.2 && netPct <= 0.2) why = 'Başa Baş Koruması';
-        else if (netPct <= -3.0) why = 'Zarar Kes'; // Güvenlik ağı
+        else if (netPct <= -3.0) why = 'Zarar Kes'; 
 
-        if (why) {
-            S.cash += px * p.qty * (1 - CFG.FEE);
-            delete S.positions[b];
-            cooldown[b] = Date.now() + (15 * 60 * 1000); // 15 Dk Cooldown
-            S.log.unshift({action: 'SAT '+b, detail: why + ` (%${netPct.toFixed(2)})`});
-        }
+        if (why) placeSell(b, why + ` (%${netPct.toFixed(2)})`);
     }
     
-    // 2. GİRİŞ: Dinamik Bütçe ve Trend
     let open = Object.keys(S.positions).length;
     const cand = universe.filter(u => !S.positions[u.base] && (!cooldown[u.base] || Date.now() > cooldown[u.base]));
     
@@ -153,27 +197,18 @@ function strategy() {
         const a = analyze(c.base);
         
         if (a.trendUp) {
-            // Kasayı bölerken işlem sayısına dikkat et, minimum $10 gir
             let alloc = Math.max(10, S.cash / (CFG.maxPositions - open + 1));
             if (alloc > S.cash * 0.95) alloc = S.cash * 0.95; 
             
             if (alloc >= 10 && prices[c.base] > 0) {
-                S.positions[c.base] = { 
-                    qty: (alloc * (1 - CFG.FEE)) / prices[c.base], 
-                    cost: alloc,
-                    entry: prices[c.base],
-                    high: prices[c.base]
-                };
-                S.cash -= alloc;
-                S.trades++;
-                S.log.unshift({action: 'AL '+c.base, detail: 'VWAP+HMA Trend Onayı'});
+                placeBuy(c.base, alloc);
                 open++;
             }
         }
     }
 }
 
-// ARAYÜZ VERİ PAKETİ
+// --- ARAYÜZ VERİ PAKETİ ---
 function snapshot() {
     let eq = S.cash;
     let posArr = [];
@@ -191,11 +226,9 @@ function snapshot() {
             upnl: currentVal - p.cost - (p.cost * CFG.FEE * 2)
         });
     }
-    let pnlPct = ((eq - CFG.startCash) / CFG.startCash) * 100;
-    
     return {
         equity: eq,
-        pnlPct: pnlPct,
+        pnlPct: ((eq - CFG.startCash) / CFG.startCash) * 100,
         cash: S.cash,
         trades: S.trades,
         positions: posArr,
@@ -203,19 +236,13 @@ function snapshot() {
     };
 }
 
-// SUNUCU VE İLETİŞİM
+// --- SUNUCU VE İLETİŞİM ---
 app.use(express.static(__dirname)); 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/api/state', (req, res) => res.json(snapshot()));
 
-app.post('/api/pause', (req, res) => res.json({ok: true}));
-app.post('/api/resume', (req, res) => res.json({ok: true}));
 app.post('/api/close-all', (req, res) => {
-    for (const b in S.positions) {
-        S.cash += S.positions[b].qty * prices[b] * (1 - CFG.FEE);
-        delete S.positions[b];
-        S.log.unshift({action: 'SAT '+b, detail: 'Manuel Kapatıldı'});
-    }
+    for (const b in S.positions) placeSell(b, 'Manuel Kapatıldı');
     res.json({ok: true});
 });
 
@@ -237,6 +264,18 @@ function broadcast() {
 
 server.listen(PORT, async () => {
     console.log('Bot başlatılıyor...');
+    
+    // Gerçek para (ccxt) modülü yalnızca gerekliyse yüklenir
+    if (CFG.mode !== 'paper') {
+        try {
+            const mod = await import('ccxt'); 
+            const ccxt = mod.default || mod;
+            tradeEx = new ccxt.binance({ apiKey: CFG.key, secret: CFG.secret, enableRateLimit: true, options: { defaultType: 'spot' } });
+            if (CFG.mode === 'testnet') tradeEx.setSandboxMode(true);
+            await tradeEx.loadMarkets();
+        } catch(e) { console.log('CCXT Yüklenemedi', e.message); }
+    }
+
     await buildUniverse();
     setInterval(async () => {
         await refreshPrices();
