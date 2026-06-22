@@ -1,17 +1,16 @@
 {
   "name": "survive-and-grow-bot",
   "version": "1.0.0",
-  "description": "Binance hesabini yoneten, 7/24 calisan, manuel mudahaleli islem botu. paper -> testnet -> live.",
   "type": "commonjs",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "engines": { "node": ">=18" },
   "dependencies": {
-    "ccxt": "^4.4.0",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "ccxt": "^4.4.0"
   }
 }
