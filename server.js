@@ -31,11 +31,11 @@ const CFG = {
   tp1Pct: +(process.env.TP1_PCT || 1.5),              // kismi kar seviyesi (net %) — ATR kapaliyken
   tp1Frac: +(process.env.TP1_FRAC || 0.5),            // kismi karda satilacak oran
   dailyLossStop: +(process.env.DAILY_LOSS_STOP || 0.15),
-  minNotional: +(process.env.MIN_NOTIONAL || 10),
+  minNotional: +(process.env.MIN_NOTIONAL || 5),
   maxTrade: +(process.env.MAX_TRADE_USDT || 0),       // 0 = sinirsiz
   cooldownMin: +(process.env.COOLDOWN_MIN || 8),
   atrExits: (process.env.ATR_EXITS || '1') !== '0',   // ATR'ye gore uyarlanan stop/hedef/trailing
-  baseFrac: +(process.env.BASE_POS_PCT || 12)/100,    // ortalama pozisyon = KASANIN %'si
+  baseFrac: +(process.env.BASE_POS_PCT || 15)/100,    // ortalama pozisyon = KASANIN %'si
   maxFrac: +(process.env.MAX_POS_PCT || 30)/100,      // tek pozisyon ust siniri = kasanin %'si
   riskPct: +(process.env.RISK_PCT || 0.015),          // (ATR boyutlandirma referansi)
   atrStopK: +(process.env.ATR_STOP_K || 2.5),         // sert stop mesafesi = K x ATR (15m icin 2.5 yapildi)
