@@ -114,7 +114,7 @@ function renderQuote(q){
       `<div>`+
         `<div class="eyebrow">COIN DETAY${q.inUniverse?'':' · (listede yok)'}</div>`+
         `<div style="font-family:Space Grotesk;font-size:22px;font-weight:700;margin:2px 0">${q.base} <span class="${q.chg>=0?'pos':'neg'}">${fpx(q.price)}</span></div>`+
-        `<div class="muted" style="font-size:11px">24s <span class="${q.chg>=0?'pos':'neg'}">${q.chg>=0?'+':''}${q.chg.toFixed(2)}%</span> · Rejim <b>${q.regime==='trend'?'TREND':q.regime==='range'?'YATAY':'belirsiz'}</b> · ADX ${q.adx} · Chop ${q.chop} · RSI ${q.rsi} · %B ${q.pctB} · ATR ${q.atrPct!=null?q.atrPct+'%':'—'} · VWAP ${sig(q.aboveVwap,'üstü','altı')} · HMA ${sig(q.hmaUp,'yükselen','düşen')} · 1h ${sig(q.htfUp,'yukarı','aşağı')}</div>`+
+        `<div class="muted" style="font-size:11px">24s <span class="${q.chg>=0?'pos':'neg'}">${q.chg>=0?'+':''}${q.chg.toFixed(2)}%</span> · Rejim <b>${q.regime==='trend'?'TREND':q.regime==='range'?'YATAY':'belirsiz'}</b> · ADX ${q.adx} · Chop ${q.chop} · RSI ${q.rsi} · %B ${q.pctB} · ATR ${q.atrPct!=null?q.atrPct+'%':'—'} · VWAP ${sig(q.aboveVwap,'üstü','altı')} · HMA ${sig(q.hmaUp,'yükselen','düşen')} · Yön 1h ${sig(q.htf1,'↑','↓')}/4h ${sig(q.htf4,'↑','↓')}</div>`+
         `<div style="font-size:12px;margin-top:5px" class="${q.trendUp?'pos':'amb'}">${q.suggest}</div>`+
       `</div>`+
       `<div style="display:flex;gap:8px;align-items:center">`+
