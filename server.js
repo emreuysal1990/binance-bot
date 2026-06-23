@@ -20,7 +20,7 @@ const CFG = {
   quote: (process.env.QUOTE || 'USDT').toUpperCase(),
   port: +(process.env.PORT || 8080),
   startCash: +(process.env.START_CASH || 100),
-  maxPositions: +(process.env.MAX_POSITIONS || 6),
+  maxPositions: +(process.env.MAX_POSITIONS || 8),
   univMax: +(process.env.UNIVERSE || 75),
   pollMs: +(process.env.POLL_MS || 6000),
   fee: +(process.env.FEE || 0.001),                   // komisyon (tek yon). BNB ile ~0.00075
@@ -36,10 +36,11 @@ const CFG = {
   maxTrade: +(process.env.MAX_TRADE_USDT || 0),       // 0 = sinirsiz
   cooldownMin: +(process.env.COOLDOWN_MIN || 35),     // satistan sonra ayni coine girmeden once bekleme (churn'u keser)
   warmupSec: +(process.env.WARMUP_SEC || 60),          // acilista veri otursun diye alim yapmadan beklenecek sure
-  maxNewPerTick: +(process.env.MAX_NEW_PER_TICK || 2), // her turda en fazla kac yeni pozisyon (acilista toplu alimi onler)
+  maxNewPerTick: +(process.env.MAX_NEW_PER_TICK || 3), // her turda en fazla kac yeni pozisyon (acilista toplu alimi onler)
   atrExits: (process.env.ATR_EXITS || '1') !== '0',   // ATR'ye gore uyarlanan stop/hedef/trailing (volatiliteye gore)
-  baseFrac: +(process.env.BASE_POS_PCT || 12)/100,    // ortalama pozisyon = KASANIN %'si (para buyur/kuculur, gercek bakiye farkli olursa otomatik olcek)
-  maxFrac: +(process.env.MAX_POS_PCT || 30)/100,      // tek pozisyon ust siniri = kasanin %'si
+  baseFrac: +(process.env.BASE_POS_PCT || 15)/100,    // ortalama pozisyon = KASANIN %'si (para buyur/kuculur, gercek bakiye farkli olursa otomatik olcek)
+  maxFrac: +(process.env.MAX_POS_PCT || 35)/100,      // tek pozisyon ust siniri = kasanin %'si
+  investTarget: +(process.env.INVEST_TARGET || 85)/100, // hedef: kasanin ~%X'i yatirimda olsun (bosta nakit cok ise pozisyonu buyut)
   riskPct: +(process.env.RISK_PCT || 0.015),          // (ATR boyutlandirma referansi)
   atrStopK: +(process.env.ATR_STOP_K || 1.3),         // sert stop mesafesi = K x ATR (daralttik: kucuk kayip)
   atrTpK: +(process.env.ATR_TP_K || 2.2),             // kismi kar mesafesi = K x ATR (gec al: kazanci buyut)
@@ -289,7 +290,9 @@ function strategy(){
     const volF = clampN(1.5/ap, 0.5, 1.5);                                                  // sakin coin -> buyuk, volatil -> kucuk
     const convF= (c.mode==='trend') ? clampN(0.7+(a.score-CFG.entryScore)*1.8, 0.7, 1.5)    // guclu trend skoru -> buyuk
                                     : clampN(0.7+(40-(a.rsi||35))/50, 0.7, 1.4);            // daha derin asiri-satim -> buyuk
-    let alloc = equity() * CFG.baseFrac * volF * convF;                                      // BOT tutari kendi belirler (kasanin %'si)
+    const investedRatio = equity()>0 ? (equity()-S.cash)/equity() : 0;                     // su an kasanin yuzde kaci yatirimda
+    const fillBoost = clampN(1 + Math.max(0, CFG.investTarget - investedRatio)*2, 1, 2);    // bosta nakit cok -> pozisyonu buyut (maxFrac yine tavan)
+    let alloc = equity() * CFG.baseFrac * volF * convF * fillBoost;                          // BOT tutari kendi belirler (kasanin %'si)
     alloc = Math.min(alloc, equity()*CFG.maxFrac, avail*0.95);
     if(CFG.maxTrade>0) alloc=Math.min(alloc,CFG.maxTrade);
     if(alloc < CFG.minNotional){ if(avail >= CFG.minNotional) alloc=CFG.minNotional; else continue; }   // taban: min emir
