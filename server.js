@@ -34,15 +34,16 @@ const CFG = {
   dailyLossStop: +(process.env.DAILY_LOSS_STOP || 0.15),
   minNotional: +(process.env.MIN_NOTIONAL || 10),
   maxTrade: +(process.env.MAX_TRADE_USDT || 0),       // 0 = sinirsiz
-  cooldownMin: +(process.env.COOLDOWN_MIN || 8),
+  cooldownMin: +(process.env.COOLDOWN_MIN || 35),     // satistan sonra ayni coine girmeden once bekleme (churn'u keser)
   warmupSec: +(process.env.WARMUP_SEC || 60),          // acilista veri otursun diye alim yapmadan beklenecek sure
   maxNewPerTick: +(process.env.MAX_NEW_PER_TICK || 2), // her turda en fazla kac yeni pozisyon (acilista toplu alimi onler)
   atrExits: (process.env.ATR_EXITS || '1') !== '0',   // ATR'ye gore uyarlanan stop/hedef/trailing (volatiliteye gore)
   baseFrac: +(process.env.BASE_POS_PCT || 12)/100,    // ortalama pozisyon = KASANIN %'si (para buyur/kuculur, gercek bakiye farkli olursa otomatik olcek)
   maxFrac: +(process.env.MAX_POS_PCT || 30)/100,      // tek pozisyon ust siniri = kasanin %'si
   riskPct: +(process.env.RISK_PCT || 0.015),          // (ATR boyutlandirma referansi)
-  atrStopK: +(process.env.ATR_STOP_K || 2.0),         // sert stop mesafesi = K x ATR
-  atrTpK: +(process.env.ATR_TP_K || 1.2),             // kismi kar mesafesi = K x ATR
+  atrStopK: +(process.env.ATR_STOP_K || 1.3),         // sert stop mesafesi = K x ATR (daralttik: kucuk kayip)
+  atrTpK: +(process.env.ATR_TP_K || 2.2),             // kismi kar mesafesi = K x ATR (gec al: kazanci buyut)
+  maxAtrPct: +(process.env.MAX_ATR_PCT || 6),         // ATR%'si bunu asan asiri vahsi coinleri alma
   flashDropK: +(process.env.FLASH_DROP_K || 1.2),     // ani dusus esigi = K x ATR (acil cikis)
   flashSpikeK: +(process.env.FLASH_SPIKE_K || 1.6),   // ani yukselis esigi = K x ATR (kar kilitle)
   spikeEntryK: +(process.env.SPIKE_ENTRY_K || 2.0),   // dikey spike tepesinden alma
@@ -53,7 +54,7 @@ const BN = 'https://data-api.binance.vision';
 const INT_MIN = ({'1m':1,'3m':3,'5m':5,'15m':15,'30m':30,'1h':60,'2h':120,'4h':240}[CFG.interval]||15);
 const VWAP_LEN = Math.max(20, Math.round(1440/INT_MIN));   // ~24 saatlik VWAP penceresi (mum sayisi; 15m->96, 5m->288)
 const STATE_FILE = path.join(__dirname, 'state.json');
-const STABLES = ['USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD','PYUSD','EUR','TRY','GBP','AEUR','XUSD'];
+const STABLES = ['USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD','PYUSD','EUR','TRY','GBP','AEUR','XUSD','RLUSD','USDE','USD1','GUSD','LUSD','FRAX','USTC','EURI'];
 function dayKey(){ return new Date().toISOString().slice(0,10); }
 
 let S = {
@@ -151,7 +152,7 @@ function analyze(b){
   const aboveVwap=vwap?px>vwap:false;
   const hmaUp=!!(hma&&hma.length>=2&&hma[hma.length-1]!=null&&hma[hma.length-2]!=null&&hma[hma.length-1]>hma[hma.length-2]);
   const htfUp=htfUpOf(b), overbought=(chg[b]||0)>=CFG.pumpMax;
-  let regime='neutral'; if(adx>=20&&chop<=62) regime='trend'; else if(chop>=58||adx<16) regime='range';
+  let regime='neutral'; if(adx>=23&&chop<=55) regime='trend'; else if(chop>=60||adx<15) regime='range';
   let score=0;
   if(aboveVwap) score+=0.20; else score-=0.20;
   if(hmaUp)     score+=0.20; else score-=0.25;
@@ -220,10 +221,10 @@ async function placeSell(base, why, frac){
 }
 function stopLevelOf(p){
   const ap=p.atrPct||1.5;
-  const sd  = CFG.atrExits? clampN(CFG.atrStopK*ap,1.5,6) : 3;
-  const actT= CFG.atrExits? Math.max(1.0,1.6*ap) : 2.5;
-  const give= CFG.atrExits? Math.max(0.6,1.1*ap) : 0.8;
-  const beT = CFG.atrExits? Math.max(0.8,1.0*ap) : 1.2;
+  const sd  = CFG.atrExits? clampN(CFG.atrStopK*ap,1.2,4.5) : 3;
+  const actT= CFG.atrExits? Math.max(1.5,1.8*ap) : 2.5;
+  const give= CFG.atrExits? Math.max(0.8,1.2*ap) : 0.8;
+  const beT = CFG.atrExits? Math.max(1.2,1.4*ap) : 1.2;
   const peakPct=((p.high*p.qty - p.cost - p.cost*CFG.fee*2)/p.cost)*100;
   if(peakPct>=actT) return p.entry*(1+(peakPct-give)/100);
   if(peakPct>=beT)  return p.entry*(1+0.1/100);
@@ -244,7 +245,7 @@ function strategy(){
     const p=S.positions[b], px=prices[b]; if(!px) continue; if(px>p.high)p.high=px;
     const a=ana[b]||{}; const ap=p.atrPct||1.5;
     let sd,tp,actT,give,beT;
-    if(CFG.atrExits){ sd=clampN(CFG.atrStopK*ap,1.5,6); tp=Math.max(0.8,CFG.atrTpK*ap); actT=Math.max(1.0,1.6*ap); give=Math.max(0.6,1.1*ap); beT=Math.max(0.8,1.0*ap); }
+    if(CFG.atrExits){ sd=clampN(CFG.atrStopK*ap,1.2,4.5); tp=Math.max(1.2,CFG.atrTpK*ap); actT=Math.max(1.5,1.8*ap); give=Math.max(0.8,1.2*ap); beT=Math.max(1.2,1.4*ap); }
     else { sd=3; tp=CFG.tp1Pct; actT=2.5; give=0.8; beT=1.2; }
     const netPct=((px*p.qty - p.cost - p.cost*CFG.fee*2)/p.cost)*100;
     const peakPct=((p.high*p.qty - p.cost - p.cost*CFG.fee*2)/p.cost)*100;
@@ -275,6 +276,7 @@ function strategy(){
     if(S.positions[b]||!(prices[b]>0)||(cooldown[b]&&Date.now()<=cooldown[b])) continue;
     if(!hist[b]||hist[b].length<100) continue;                                       // ana mum verisi tam degil -> alma
     if(CFG.htf && (!hist1h[b]||hist1h[b].length<55||!hist4h[b]||hist4h[b].length<55)) continue;  // 1h/4h yon verisi tam degil -> alma
+    if((a.atrPct||0) > CFG.maxAtrPct) continue;                                       // asiri vahsi coin (yuksek ATR%) -> alma
     const ap=a.atrPct||1.5, ref=prevPx[b], fr=(ref&&ref>0)?(prices[b]/ref-1)*100:0;
     if(fr >= Math.max(2.0, CFG.spikeEntryK*ap)) continue;     // dikey spike tepesinden alma
     if(a.trendUp)         cands.push({b,mode:'trend',rank:a.score});
