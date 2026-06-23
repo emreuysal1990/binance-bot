@@ -35,7 +35,9 @@ const CFG = {
   maxTrade: +(process.env.MAX_TRADE_USDT || 0),       // 0 = sinirsiz
   cooldownMin: +(process.env.COOLDOWN_MIN || 8),
   atrExits: (process.env.ATR_EXITS || '1') !== '0',   // ATR'ye gore uyarlanan stop/hedef/trailing (volatiliteye gore)
-  riskPct: +(process.env.RISK_PCT || 0.015),          // islem basina riske edilen oz sermaye orani
+  baseFrac: +(process.env.BASE_POS_PCT || 12)/100,    // ortalama pozisyon = KASANIN %'si (para buyur/kuculur, gercek bakiye farkli olursa otomatik olcek)
+  maxFrac: +(process.env.MAX_POS_PCT || 30)/100,      // tek pozisyon ust siniri = kasanin %'si
+  riskPct: +(process.env.RISK_PCT || 0.015),          // (ATR boyutlandirma referansi)
   atrStopK: +(process.env.ATR_STOP_K || 2.0),         // sert stop mesafesi = K x ATR
   atrTpK: +(process.env.ATR_TP_K || 1.2),             // kismi kar mesafesi = K x ATR
   flashDropK: +(process.env.FLASH_DROP_K || 1.2),     // ani dusus esigi = K x ATR (acil cikis)
@@ -94,7 +96,7 @@ async function seedHistory(){
       if(Array.isArray(k1)&&k1.length) hist1h[u.base]=k1.map(x=>+x[4]); }catch(e){} }
   }
   lastReseed=Date.now();
-  log('info','Gecmis','5dk + 1h mumlar yuklendi — indikatorler hazir.');
+  console.log('[gecmis] 5dk + 1h mumlar yuklendi');
 }
 async function refreshPrices(){
   if(!universe.length) return;
@@ -264,12 +266,15 @@ function strategy(){
   }
   cands.sort((x,y)=>y.rank-x.rank);
   for(const c of cands){ if(open>=CFG.maxPositions) break;
-    let alloc=Math.max(equity()/CFG.maxPositions, CFG.minNotional);                 // esit dilim (taban)
-    if(CFG.atrExits){ const ap=(ana[c.b]&&ana[c.b].atrPct)||1.5; const sd=clampN(CFG.atrStopK*ap,1.5,6);
-      const riskSize=equity()*CFG.riskPct/(sd/100); alloc=Math.min(alloc, riskSize); }            // volatil coine daha kucuk pozisyon
-    alloc=Math.min(alloc, avail*0.95);
+    const a=ana[c.b]||{}; const ap=a.atrPct||1.5;
+    const volF = clampN(1.5/ap, 0.5, 1.5);                                                  // sakin coin -> buyuk, volatil -> kucuk
+    const convF= (c.mode==='trend') ? clampN(0.7+(a.score-CFG.entryScore)*1.8, 0.7, 1.5)    // guclu trend skoru -> buyuk
+                                    : clampN(0.7+(40-(a.rsi||35))/50, 0.7, 1.4);            // daha derin asiri-satim -> buyuk
+    let alloc = equity() * CFG.baseFrac * volF * convF;                                      // BOT tutari kendi belirler
+    alloc = Math.min(alloc, equity()*CFG.maxFrac, avail*0.95);
     if(CFG.maxTrade>0) alloc=Math.min(alloc,CFG.maxTrade);
-    if(alloc < CFG.minNotional) continue;
+    if(alloc < CFG.minNotional){ if(avail >= CFG.minNotional) alloc=CFG.minNotional; else continue; }   // taban: min emir
+    alloc = Math.round(alloc*100)/100;
     queue(()=>placeBuy(c.b, alloc, c.mode)); open++; avail-=alloc;
   }
 }
@@ -326,7 +331,7 @@ app.post('/api/close-all', auth, (req,res)=>{ for(const b of Object.keys(S.posit
 app.post('/api/panic', auth, (req,res)=>{ S.running=false; for(const b of Object.keys(S.positions)) queue(()=>placeSell(b,'PANIK',1)); log('warn','Manuel','PANIK — hepsi kapatildi + durduruldu.'); res.json({ok:true}); });
 app.post('/api/quote', auth, async (req,res)=>{ const b=(req.body.symbol||'').toUpperCase(); if(!b) return res.status(400).json({error:'symbol'}); try{ res.json(await quoteCoin(b)); }catch(e){ res.status(400).json({error:String(e.message||e)}); } });
 app.post('/api/buy', auth, async (req,res)=>{ const b=(req.body.symbol||'').toUpperCase().replace(new RegExp(CFG.quote+'$'),''); if(!b) return res.status(400).json({error:'symbol'});
-  let usd=parseFloat(req.body.usdt); if(!isFinite(usd)||usd<=0) usd=Math.min(equity()/CFG.maxPositions, S.cash*0.95);
+  let usd=parseFloat(req.body.usdt); if(!isFinite(usd)||usd<=0) usd=Math.min(equity()*CFG.baseFrac, S.cash*0.95);
   if(prices[b]==null){ try{ await quoteCoin(b); }catch(e){ return res.status(400).json({error:String(e.message||e)}); } }
   if(usd>S.cash) return res.status(400).json({error:'nakit yetersiz'});
   if(usd<1) return res.status(400).json({error:'tutar cok kucuk'});
