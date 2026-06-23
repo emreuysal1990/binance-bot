@@ -290,9 +290,9 @@ function strategy(){
     const volF = clampN(1.5/ap, 0.5, 1.5);                                                  // sakin coin -> buyuk, volatil -> kucuk
     const convF= (c.mode==='trend') ? clampN(0.7+(a.score-CFG.entryScore)*1.8, 0.7, 1.5)    // guclu trend skoru -> buyuk
                                     : clampN(0.7+(40-(a.rsi||35))/50, 0.7, 1.4);            // daha derin asiri-satim -> buyuk
-    const investedRatio = equity()>0 ? (equity()-S.cash)/equity() : 0;                     // su an kasanin yuzde kaci yatirimda
-    const fillBoost = clampN(1 + Math.max(0, CFG.investTarget - investedRatio)*2, 1, 2);    // bosta nakit cok -> pozisyonu buyut (maxFrac yine tavan)
-    let alloc = equity() * CFG.baseFrac * volF * convF * fillBoost;                          // BOT tutari kendi belirler (kasanin %'si)
+    const perSlot = CFG.investTarget / CFG.maxPositions;                                     // hedef yatirimi slotlara bol -> para birden bitmez, cok coine yayilir
+    const qf = clampN(volF*convF, 0.8, 1.4);                                                 // kalite carpani dar tutulur -> pozisyonlar birbirine yakin, daha cok coine yayilir
+    let alloc = equity() * perSlot * qf;                                                      // tipik pozisyon ~ kasanin %(hedef/maxPoz)'si
     alloc = Math.min(alloc, equity()*CFG.maxFrac, avail*0.95);
     if(CFG.maxTrade>0) alloc=Math.min(alloc,CFG.maxTrade);
     if(alloc < CFG.minNotional){ if(avail >= CFG.minNotional) alloc=CFG.minNotional; else continue; }   // taban: min emir
