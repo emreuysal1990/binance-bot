@@ -1,6 +1,6 @@
 'use strict';
-/* Survive & Grow — Binance Hesap Yoneticisi (15m + 1h/4h HTF Versiyonu)
- * Veri: Binance (data-api.binance.vision) · Strateji: HMA + VWAP + ADX (15m) + 1h & 4h trend onayi
+/* Survive & Grow — Binance Hesap Yoneticisi
+ * Veri: Binance (data-api.binance.vision) · Strateji: HMA + VWAP + ADX (ana mum, vars. 15m) + 1h/4h yon onayi
  * Filtreler: trend yukari + asiri-pump engeli · Cikis: kismi kar + zirveden donus + basabas + sert stop
  * Gerceklik: komisyon + slipaj · Live: Binance lot/min-notional yuvarlama · Gun-ici kill-switch
  * Panel: token korumali REST + WS · elle al (coin detay+tutar) · sermaye egrisi + istatistik + CSV
@@ -25,21 +25,24 @@ const CFG = {
   pollMs: +(process.env.POLL_MS || 6000),
   fee: +(process.env.FEE || 0.001),                   // komisyon (tek yon). BNB ile ~0.00075
   slip: +(process.env.SLIP || 0.0005),                // market emir slipaj tahmini (tek yon)
-  entryScore: +(process.env.ENTRY_SCORE || 0.30),     // trend skor esigi (15m icin 0.20'den 0.30'a cikarildi)
-  htf: (process.env.HTF || '1') !== '0',              // 1h + 4h trend onayi acik/kapali
+  entryScore: +(process.env.ENTRY_SCORE || 0.20),     // trend skor esigi (maks 0.60) — dusuk = daha cok firsat
+  htf: (process.env.HTF || '1') !== '0',              // 1h + 4h yon onayi acik/kapali
+  interval: (process.env.INTERVAL || '15m'),          // ana sinyal mum araligi (15m onerilir; 5m daha gurultulu)
   pumpMax: +(process.env.PUMP_MAX || 40),             // 24s %X uzeri pompalandiysa alma
   tp1Pct: +(process.env.TP1_PCT || 1.5),              // kismi kar seviyesi (net %) — ATR kapaliyken
   tp1Frac: +(process.env.TP1_FRAC || 0.5),            // kismi karda satilacak oran
   dailyLossStop: +(process.env.DAILY_LOSS_STOP || 0.15),
-  minNotional: +(process.env.MIN_NOTIONAL || 5),
+  minNotional: +(process.env.MIN_NOTIONAL || 10),
   maxTrade: +(process.env.MAX_TRADE_USDT || 0),       // 0 = sinirsiz
   cooldownMin: +(process.env.COOLDOWN_MIN || 8),
-  atrExits: (process.env.ATR_EXITS || '1') !== '0',   // ATR'ye gore uyarlanan stop/hedef/trailing
-  baseFrac: +(process.env.BASE_POS_PCT || 15)/100,    // ortalama pozisyon = KASANIN %'si
+  warmupSec: +(process.env.WARMUP_SEC || 60),          // acilista veri otursun diye alim yapmadan beklenecek sure
+  maxNewPerTick: +(process.env.MAX_NEW_PER_TICK || 2), // her turda en fazla kac yeni pozisyon (acilista toplu alimi onler)
+  atrExits: (process.env.ATR_EXITS || '1') !== '0',   // ATR'ye gore uyarlanan stop/hedef/trailing (volatiliteye gore)
+  baseFrac: +(process.env.BASE_POS_PCT || 12)/100,    // ortalama pozisyon = KASANIN %'si (para buyur/kuculur, gercek bakiye farkli olursa otomatik olcek)
   maxFrac: +(process.env.MAX_POS_PCT || 30)/100,      // tek pozisyon ust siniri = kasanin %'si
   riskPct: +(process.env.RISK_PCT || 0.015),          // (ATR boyutlandirma referansi)
-  atrStopK: +(process.env.ATR_STOP_K || 2.5),         // sert stop mesafesi = K x ATR (15m icin 2.5 yapildi)
-  atrTpK: +(process.env.ATR_TP_K || 1.5),             // kismi kar mesafesi = K x ATR (15m icin 1.5 yapildi)
+  atrStopK: +(process.env.ATR_STOP_K || 2.0),         // sert stop mesafesi = K x ATR
+  atrTpK: +(process.env.ATR_TP_K || 1.2),             // kismi kar mesafesi = K x ATR
   flashDropK: +(process.env.FLASH_DROP_K || 1.2),     // ani dusus esigi = K x ATR (acil cikis)
   flashSpikeK: +(process.env.FLASH_SPIKE_K || 1.6),   // ani yukselis esigi = K x ATR (kar kilitle)
   spikeEntryK: +(process.env.SPIKE_ENTRY_K || 2.0),   // dikey spike tepesinden alma
@@ -47,6 +50,8 @@ const CFG = {
   secret: process.env.BINANCE_SECRET || '',
 };
 const BN = 'https://data-api.binance.vision';
+const INT_MIN = ({'1m':1,'3m':3,'5m':5,'15m':15,'30m':30,'1h':60,'2h':120,'4h':240}[CFG.interval]||15);
+const VWAP_LEN = Math.max(20, Math.round(1440/INT_MIN));   // ~24 saatlik VWAP penceresi (mum sayisi; 15m->96, 5m->288)
 const STATE_FILE = path.join(__dirname, 'state.json');
 const STABLES = ['USDC','FDUSD','TUSD','DAI','USDP','BUSD','USDD','PYUSD','EUR','TRY','GBP','AEUR','XUSD'];
 function dayKey(){ return new Date().toISOString().slice(0,10); }
@@ -60,6 +65,7 @@ process.on('unhandledRejection', e=>{ try{S.lastError='unhandled: '+String(e&&e.
 process.on('uncaughtException',  e=>{ try{S.lastError='uncaught: '+String(e&&e.message||e);}catch(_){} console.error('uncaughtException:', e&&e.message||e); });
 
 let prices={}, chg={}, hist={}, hist1h={}, hist4h={}, universe=[], cooldown={}, ana={}, prevPx={}, lastReseed=0, lastLoopErr='';
+let dataReady=false, warmupUntil=0;
 let tradeEx=null;
 let q=Promise.resolve(); function queue(fn){ q=q.then(fn).catch(e=>log('warn','Kuyruk',String(e&&e.message||e))); return q; }
 
@@ -90,19 +96,17 @@ async function buildUniverse(){
 }
 async function seedHistory(){
   for(const u of universe){
-    try{ const k=await getJSON(BN+'/api/v3/klines?symbol='+u.sym+'&interval=15m&limit=300'); // 5m -> 15m yapildi
+    try{ const k=await getJSON(BN+'/api/v3/klines?symbol='+u.sym+'&interval='+CFG.interval+'&limit=300');
       if(Array.isArray(k)&&k.length) hist[u.base]=k.map(x=>({h:+x[2],l:+x[3],c:+x[4],v:+x[5]})); }catch(e){}
-    
-    if(CFG.htf){ 
-      try{ const k1=await getJSON(BN+'/api/v3/klines?symbol='+u.sym+'&interval=1h&limit=120');
-        if(Array.isArray(k1)&&k1.length) hist1h[u.base]=k1.map(x=>+x[4]); }catch(e){} 
-      
-      try{ const k4=await getJSON(BN+'/api/v3/klines?symbol='+u.sym+'&interval=4h&limit=120');
-        if(Array.isArray(k4)&&k4.length) hist4h[u.base]=k4.map(x=>+x[4]); }catch(e){} 
+    if(CFG.htf){
+      try{ const k1=await getJSON(BN+'/api/v3/klines?symbol='+u.sym+'&interval=1h&limit=120'); if(Array.isArray(k1)&&k1.length) hist1h[u.base]=k1.map(x=>+x[4]); }catch(e){}
+      try{ const k4=await getJSON(BN+'/api/v3/klines?symbol='+u.sym+'&interval=4h&limit=120'); if(Array.isArray(k4)&&k4.length) hist4h[u.base]=k4.map(x=>+x[4]); }catch(e){}
     }
   }
   lastReseed=Date.now();
-  console.log('[gecmis] 15dk + 1h + 4h mumlar yuklendi');
+  console.log('[gecmis] '+CFG.interval+' + 1h + 4h mumlar yuklendi');
+  if(!dataReady){ dataReady=true; warmupUntil=Date.now()+CFG.warmupSec*1000;
+    log('info','Hazir', `Veri oturdu — ${CFG.warmupSec}sn isinma sonrasi alim baslar.`); }
 }
 async function refreshPrices(){
   if(!universe.length) return;
@@ -127,27 +131,10 @@ function calcADX(h,p=14){ if(h.length<p*2)return 20; const tr=[],pdm=[],ndm=[];
   const dx=trS.map((t,i)=>{ if(t===0)return 0; const pdi=100*pdmS[i]/t, ndi=100*ndmS[i]/t, sum=pdi+ndi; return sum===0?0:100*Math.abs(pdi-ndi)/sum; });
   return dx.slice(-p).reduce((a,b)=>a+b,0)/p; }
 function ema(arr,p){ if(!arr||arr.length<p)return null; const k=2/(p+1); let e=arr.slice(0,p).reduce((a,b)=>a+b,0)/p; for(let i=p;i<arr.length;i++) e=arr[i]*k+e*(1-k); return e; }
-
-// Çift HTF Onayı (1h ve 4h)
-function htfUpOf(b){ 
-  if(!CFG.htf) return true; 
-  
-  const c1 = hist1h[b]; 
-  let up1 = true;
-  if(c1 && c1.length >= 55) {
-      const e1 = ema(c1, 50); 
-      if(e1) up1 = c1[c1.length-1] > e1;
-  }
-
-  const c4 = hist4h[b]; 
-  let up4 = true;
-  if(c4 && c4.length >= 55) {
-      const e4 = ema(c4, 50); 
-      if(e4) up4 = c4[c4.length-1] > e4;
-  }
-
-  return up1 && up4; 
-}
+function legUp(closes){ if(!closes||closes.length<55) return null; const e=ema(closes,50); return e? closes[closes.length-1]>e : null; }   // null = veri yok
+function htfUpOf(b){ if(!CFG.htf) return true; const a=legUp(hist1h[b]), c=legUp(hist4h[b]);
+  if(a===null||c===null) return false;   // 1h+4h verisi tam degilse yon onayi YOK (alma)
+  return a && c; }                        // ikisi de yukari olmali
 
 function calcRSI(c,p=14){ if(c.length<p+1)return 50; let g=0,l=0; for(let i=c.length-p;i<c.length;i++){ const d=c[i]-c[i-1]; if(d>=0)g+=d; else l-=d; } if(l===0)return 100; const rs=(g/p)/(l/p); return 100-100/(1+rs); }
 function calcBB(c,p=20,k=2){ if(c.length<p)return null; const s=c.slice(-p), m=s.reduce((a,b)=>a+b,0)/p; const sd=Math.sqrt(s.reduce((a,b)=>a+(b-m)*(b-m),0)/p); const upper=m+k*sd, lower=m-k*sd, px=c[c.length-1]; return {mid:m,upper,lower,pctB:(upper-lower)>0?(px-lower)/(upper-lower):0.5}; }
@@ -158,7 +145,7 @@ function calcATR(h,p=14){ if(!h||h.length<p+1)return null; let s=0; for(let i=h.
 function analyze(b){
   const h=hist[b]; if(!h||h.length<100) return {score:0,trendUp:false,meanRevBuy:false,regime:'neutral',adx:0,chop:50,rsi:50,pctB:0.5,atrPct:null,aboveVwap:false,hmaUp:false,htfUp:htfUpOf(b),overbought:(chg[b]||0)>=CFG.pumpMax,px:prices[b]||0};
   const cArr=h.map(x=>x.c), px=cArr[cArr.length-1];
-  const vwap=calcVWAP(h), hma=calcHMA(cArr), adx=calcADX(h), chop=calcCHOP(h), rsi=calcRSI(cArr), bb=calcBB(cArr);
+  const vwap=calcVWAP(h,VWAP_LEN), hma=calcHMA(cArr), adx=calcADX(h), chop=calcCHOP(h), rsi=calcRSI(cArr), bb=calcBB(cArr);
   const pctB=bb?bb.pctB:0.5;
   const atr=calcATR(h,14), atrPct=(atr&&px>0)?clampN(atr/px*100,0.3,8):null;
   const aboveVwap=vwap?px>vwap:false;
@@ -281,27 +268,31 @@ function strategy(){
   }
   // GIRISLER (trend + yatay birlikte; en guclu sinyaller once)
   if(!S.running||S.killed) return;
+  if(!dataReady || Date.now()<warmupUntil) return;                                   // veri otursun + isinma bitsin
   let open=Object.keys(S.positions).length, avail=S.cash;
   const cands=[];
   for(const u of universe){ const b=u.base, a=ana[b]; if(!a) continue;
     if(S.positions[b]||!(prices[b]>0)||(cooldown[b]&&Date.now()<=cooldown[b])) continue;
+    if(!hist[b]||hist[b].length<100) continue;                                       // ana mum verisi tam degil -> alma
+    if(CFG.htf && (!hist1h[b]||hist1h[b].length<55||!hist4h[b]||hist4h[b].length<55)) continue;  // 1h/4h yon verisi tam degil -> alma
     const ap=a.atrPct||1.5, ref=prevPx[b], fr=(ref&&ref>0)?(prices[b]/ref-1)*100:0;
     if(fr >= Math.max(2.0, CFG.spikeEntryK*ap)) continue;     // dikey spike tepesinden alma
     if(a.trendUp)         cands.push({b,mode:'trend',rank:a.score});
     else if(a.meanRevBuy) cands.push({b,mode:'range',rank:0.5+(40-a.rsi)/70});
   }
   cands.sort((x,y)=>y.rank-x.rank);
-  for(const c of cands){ if(open>=CFG.maxPositions) break;
+  let placed=0;
+  for(const c of cands){ if(open>=CFG.maxPositions || placed>=CFG.maxNewPerTick) break;
     const a=ana[c.b]||{}; const ap=a.atrPct||1.5;
-    const volF = clampN(1.5/ap, 0.5, 1.5);                                                // sakin coin -> buyuk, volatil -> kucuk
+    const volF = clampN(1.5/ap, 0.5, 1.5);                                                  // sakin coin -> buyuk, volatil -> kucuk
     const convF= (c.mode==='trend') ? clampN(0.7+(a.score-CFG.entryScore)*1.8, 0.7, 1.5)    // guclu trend skoru -> buyuk
                                     : clampN(0.7+(40-(a.rsi||35))/50, 0.7, 1.4);            // daha derin asiri-satim -> buyuk
-    let alloc = equity() * CFG.baseFrac * volF * convF;                                      // BOT tutari kendi belirler
+    let alloc = equity() * CFG.baseFrac * volF * convF;                                      // BOT tutari kendi belirler (kasanin %'si)
     alloc = Math.min(alloc, equity()*CFG.maxFrac, avail*0.95);
     if(CFG.maxTrade>0) alloc=Math.min(alloc,CFG.maxTrade);
     if(alloc < CFG.minNotional){ if(avail >= CFG.minNotional) alloc=CFG.minNotional; else continue; }   // taban: min emir
     alloc = Math.round(alloc*100)/100;
-    queue(()=>placeBuy(c.b, alloc, c.mode)); open++; avail-=alloc;
+    queue(()=>placeBuy(c.b, alloc, c.mode)); open++; placed++; avail-=alloc;
   }
 }
 
@@ -310,7 +301,7 @@ async function quoteCoin(base){
   base=base.toUpperCase().replace(new RegExp(CFG.quote+'$'),''); const sym=base+CFG.quote;
   const inU=universe.some(u=>u.base===base);
   if(!hist[base] || hist[base].length<100){
-    const k=await getJSON(BN+'/api/v3/klines?symbol='+sym+'&interval=15m&limit=300'); // 5m -> 15m yapildi
+    const k=await getJSON(BN+'/api/v3/klines?symbol='+sym+'&interval='+CFG.interval+'&limit=300');
     if(!Array.isArray(k)||!k.length) throw new Error('coin bulunamadi: '+sym);
     hist[base]=k.map(x=>({h:+x[2],l:+x[3],c:+x[4],v:+x[5]}));
   }
@@ -318,11 +309,12 @@ async function quoteCoin(base){
   if(CFG.htf && (!hist4h[base]||hist4h[base].length<55)){ try{ const k4=await getJSON(BN+'/api/v3/klines?symbol='+sym+'&interval=4h&limit=120'); if(Array.isArray(k4))hist4h[base]=k4.map(x=>+x[4]); }catch(e){} }
   if(prices[base]==null){ try{ const t=await getJSON(BN+'/api/v3/ticker/24hr?symbol='+sym); prices[base]=parseFloat(t.lastPrice); chg[base]=parseFloat(t.priceChangePercent); }catch(e){} }
   const a=analyze(base);
+  const htf1=legUp(hist1h[base]), htf4=legUp(hist4h[base]);
   const sysBuy=a.trendUp||a.meanRevBuy;
-  let why=[]; if(!a.htfUp)why.push('1h veya 4h trend aşağı'); if(a.overbought)why.push('24s aşırı pump'); if(a.regime==='neutral')why.push('rejim belirsiz'); if(a.regime==='trend'&&a.score<CFG.entryScore)why.push('trend skoru düşük'); if(a.regime==='range'&&!(a.rsi<35&&a.pctB<0.15))why.push('yatayda dip değil');
+  let why=[]; if(!a.htfUp)why.push('1h/4h trend onayı yok'); if(a.overbought)why.push('24s aşırı pump'); if(a.regime==='neutral')why.push('rejim belirsiz'); if(a.regime==='trend'&&a.score<CFG.entryScore)why.push('trend skoru düşük'); if(a.regime==='range'&&!(a.rsi<40&&a.pctB<0.20))why.push('yatayda dip değil');
   return { base, sym, price:prices[base]||a.px||0, chg:chg[base]||0, score:a.score, trendUp:a.trendUp, meanRevBuy:a.meanRevBuy,
     regime:a.regime, rsi:Math.round(a.rsi), pctB:+(a.pctB).toFixed(2), adx:Math.round(a.adx), chop:Math.round(a.chop), atrPct:a.atrPct!=null?+a.atrPct.toFixed(2):null,
-    aboveVwap:a.aboveVwap, hmaUp:a.hmaUp, htfUp:a.htfUp, overbought:a.overbought, inUniverse:inU,
+    aboveVwap:a.aboveVwap, hmaUp:a.hmaUp, htfUp:a.htfUp, htf1:htf1===true, htf4:htf4===true, overbought:a.overbought, inUniverse:inU,
     suggest: sysBuy ? ('Sistem ALIR — '+(a.trendUp?'TREND (momentum)':'YATAY (dipten al)')) : ('Sistem normalde almaz ('+(why.join(', ')||'zayıf')+') — elle alabilirsin') };
 }
 
@@ -373,7 +365,7 @@ function broadcast(){ let m; try{ m=JSON.stringify(snapshot()); }catch(e){ retur
 
 // ---------- BASLAT ----------
 function start(){
-  log('info','Baslatiliyor', `mod=${CFG.mode} · kasa=$${CFG.startCash} · evren=${CFG.univMax} · maxPoz=${CFG.maxPositions} · 1hOnay=${CFG.htf?'acik':'kapali'}`);
+  log('info','Baslatiliyor', `mod=${CFG.mode} · kasa=$${CFG.startCash} · mum=${CFG.interval} · evren=${CFG.univMax} · maxPoz=${CFG.maxPositions} · 1hOnay=${CFG.htf?'acik':'kapali'}`);
   if(CFG.mode==='live') log('warn','GERCEK PARA','LIVE modundasin — gercek fonlarla islem yapilacak. Kucuk basla.');
   loadState();
   server.listen(CFG.port, ()=>log('info','Panel hazir', `port ${CFG.port} dinleniyor (token ile gir)`));
