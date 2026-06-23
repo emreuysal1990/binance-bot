@@ -70,7 +70,9 @@
   <div class="grid">
     <div class="panel">
       <h3>Açık Pozisyonlar <span class="muted" id="posN"></span></h3>
-      <table id="posT"><thead><tr><th>Coin</th><th>Giriş→Şimdi</th><th>Stop</th><th>P/Z</th><th></th></tr></thead><tbody></tbody></table>
+      <div style="overflow-x:auto">
+      <table id="posT"><thead><tr><th>Coin</th><th>Tutar</th><th>Giriş→Şimdi</th><th>Stop</th><th>P/Z</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
       <div class="muted" id="posEmpty" style="font-size:12px;padding:8px 2px">Açık pozisyon yok</div>
       <h3 style="margin-top:14px">Piyasa <span class="muted" id="srcN"></span></h3>
       <div class="mkt" id="mkt"></div>
@@ -112,7 +114,7 @@ function renderQuote(q){
       `<div>`+
         `<div class="eyebrow">COIN DETAY${q.inUniverse?'':' · (listede yok)'}</div>`+
         `<div style="font-family:Space Grotesk;font-size:22px;font-weight:700;margin:2px 0">${q.base} <span class="${q.chg>=0?'pos':'neg'}">${fpx(q.price)}</span></div>`+
-        `<div class="muted" style="font-size:11px">24s <span class="${q.chg>=0?'pos':'neg'}">${q.chg>=0?'+':''}${q.chg.toFixed(2)}%</span> · Skor <b>${q.score>=0?'+':''}${q.score.toFixed(2)}</b> · ADX ${q.adx} · VWAP ${sig(q.aboveVwap,'üstü','altı')} · HMA ${sig(q.hmaUp,'yükselen','düşen')}</div>`+
+        `<div class="muted" style="font-size:11px">24s <span class="${q.chg>=0?'pos':'neg'}">${q.chg>=0?'+':''}${q.chg.toFixed(2)}%</span> · Rejim <b>${q.regime==='trend'?'TREND':q.regime==='range'?'YATAY':'belirsiz'}</b> · ADX ${q.adx} · Chop ${q.chop} · RSI ${q.rsi} · %B ${q.pctB} · ATR ${q.atrPct!=null?q.atrPct+'%':'—'} · VWAP ${sig(q.aboveVwap,'üstü','altı')} · HMA ${sig(q.hmaUp,'yükselen','düşen')} · 1h ${sig(q.htfUp,'yukarı','aşağı')}</div>`+
         `<div style="font-size:12px;margin-top:5px" class="${q.trendUp?'pos':'amb'}">${q.suggest}</div>`+
       `</div>`+
       `<div style="display:flex;gap:8px;align-items:center">`+
@@ -137,20 +139,27 @@ function drawChart(series,start){ const svg=$("eqChart"); if(!svg)return; const 
 }
 function dlCsv(){ if(!TOKEN)return; window.open("/api/trades.csv?token="+encodeURIComponent(TOKEN),"_blank"); }
 function render(d){
-  $("modeBadge").textContent=(d.mode||"").toUpperCase()+(d.killed?" · KILL":d.running?" · ÇALIŞIYOR":" · DURDU");
+  d.positions=d.positions||[]; d.market=d.market||[]; d.log=d.log||[];
+  const quote=d.quote||"USDT", start=(d.start!=null?d.start:0);
+  $("modeBadge").textContent=(d.mode||"PAPER").toUpperCase()+(d.killed?" · KILL":d.running===false?" · DURDU":" · ÇALIŞIYOR");
   $("modeBadge").style.color=d.mode==="live"?"var(--down)":d.mode==="testnet"?"var(--amber)":"var(--teal)";
-  $("eq").textContent=f(d.equity)+" "+d.quote; $("eq").className="b "+(d.equity>=d.start?"pos":"neg");
+  $("eq").textContent=f(d.equity)+" "+quote; $("eq").className="b "+(d.equity>=start?"pos":"neg");
   $("pnl").textContent=(d.pnlPct>=0?"+":"")+f(d.pnlPct)+"%"; $("pnl").className="b "+(d.pnlPct>=0?"pos":"neg");
-  $("cash").textContent=f(d.cash); $("stat").textContent=d.trades+" · "+(d.killed?"KILL":d.running?"●":"⏸");
-  $("pp").textContent=d.running?"⏸ Duraklat":"▶ Devam"; $("pp").onclick=()=>act(d.running?"pause":"resume");
-  $("srcN").textContent=d.univ+" coin"; $("posN").textContent=d.positions.length+" açık";
-  if($("resetBtn")) $("resetBtn").textContent="↺ Sıfırla ($"+f(d.start,0)+")";
+  $("cash").textContent=f(d.cash); $("stat").textContent=(d.trades||0)+" · "+(d.killed?"KILL":d.running===false?"⏸":"●");
+  $("pp").textContent=d.running===false?"▶ Devam":"⏸ Duraklat"; $("pp").onclick=()=>act(d.running===false?"resume":"pause");
+  $("srcN").textContent=(d.univ||0)+" coin"; $("posN").textContent=d.positions.length+" açık";
+  if($("resetBtn")) $("resetBtn").textContent=start?("↺ Sıfırla ($"+f(start,0)+")"):"↺ Sıfırla";
   if(d.stats){ const s=d.stats; $("statLine").textContent=`${s.closed} işlem · kazanma %${s.winRate.toFixed(0)} · ort.kâr +%${s.avgWinPct.toFixed(2)} · ort.zarar %${s.avgLossPct.toFixed(2)} · PF ${s.pf.toFixed(2)}`; }
-  drawChart(d.equitySeries||[], d.start);
+  else { $("statLine").textContent=""; }
+  drawChart(d.equitySeries||[], start);
   const tb=$("posT").querySelector("tbody"); tb.innerHTML="";
   $("posEmpty").style.display=d.positions.length?"none":"block";
   d.positions.forEach(p=>{ const upct=p.cost?(p.upnl/p.cost*100):0; const tr=document.createElement("tr");
-    tr.innerHTML=`<td><b>${p.base}</b></td><td>${fpx(p.entry)}→${fpx(p.price)}</td><td class="muted">${fpx(p.stopLvl)}</td>`+
+    const modeTag=p.mode?` <span class="muted" style="font-size:9px">${p.mode==='range'?'YATAY':'TREND'}</span>`:'';
+    const stopTxt=(p.stopLvl!=null&&isFinite(p.stopLvl))?fpx(p.stopLvl):'—';
+    tr.innerHTML=`<td><b>${p.base}</b>${modeTag}</td>`+
+      `<td>$${f(p.cost)}<br><span class="muted" style="font-size:9px">${p.qty!=null?(+p.qty).toPrecision(4)+' adet':''}</span></td>`+
+      `<td>${fpx(p.entry)}→${fpx(p.price)}</td><td class="muted">${stopTxt}</td>`+
       `<td class="${p.upnl>=0?'pos':'neg'}">${p.upnl>=0?'+':''}${f(p.upnl)} (${upct>=0?'+':''}${upct.toFixed(2)}%)</td>`+
       `<td><button class="danger" style="padding:4px 9px" onclick="manualSell('${p.base}')">Sat</button></td>`;
     tb.appendChild(tr); });
@@ -159,7 +168,7 @@ function render(d){
     c.innerHTML=`<b>${x.base}</b>${x.held?' <span class="amb">●</span>':''}<br>${fpx(x.price)}<br><span class="${x.chg>=0?'pos':'neg'}">${x.chg>=0?'▲':'▼'}${Math.abs(x.chg).toFixed(1)}%</span> <span class="muted">S${x.score>=0?'+':''}${x.score.toFixed(2)}</span>`;
     m.appendChild(c); });
   const lg=$("log"); lg.innerHTML=""; d.log.forEach(e=>{ const el=document.createElement("div"); el.className="ev "+(e.type||"");
-    el.innerHTML=`<span class="t">${new Date(e.ts).toLocaleTimeString()}</span> <b>${e.action}</b> — ${e.detail}`; lg.appendChild(el); });
+    el.innerHTML=`${e.ts?'<span class="t">'+new Date(e.ts).toLocaleTimeString()+'</span> ':''}<b>${e.action||''}</b> — ${e.detail||''}`; lg.appendChild(el); });
 }
 </script>
 </body>
