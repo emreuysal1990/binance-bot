@@ -25,16 +25,16 @@ const CFG = {
   pollMs: +(process.env.POLL_MS || 6000),
   fee: +(process.env.FEE || 0.001),                   // komisyon (tek yon). BNB ile ~0.00075
   slip: +(process.env.SLIP || 0.0005),                // market emir slipaj tahmini (tek yon)
-  entryScore: +(process.env.ENTRY_SCORE || 0.20),     // trend skor esigi (maks 0.60) — dusuk = daha cok firsat
+  entryScore: +(process.env.ENTRY_SCORE || 0.40),     // trend skor esigi (maks 0.60) — YUKSELTILDI: sadece guclu trendler -> az+kaliteli islem
   htf: (process.env.HTF || '1') !== '0',              // 1h + 4h yon onayi acik/kapali
   interval: (process.env.INTERVAL || '15m'),          // ana sinyal mum araligi (15m onerilir; 5m daha gurultulu)
   pumpMax: +(process.env.PUMP_MAX || 40),             // 24s %X uzeri pompalandiysa alma
   tp1Pct: +(process.env.TP1_PCT || 1.5),              // kismi kar seviyesi (net %) — ATR kapaliyken
-  tp1Frac: +(process.env.TP1_FRAC || 0.5),            // kismi karda satilacak oran
+  tp1Frac: +(process.env.TP1_FRAC || 0.34),           // kismi karda satilacak oran (DUSURULDU: kalan trendi daha uzun kossun -> payoff buyur)
   dailyLossStop: +(process.env.DAILY_LOSS_STOP || 0.15),
   minNotional: +(process.env.MIN_NOTIONAL || 10),
   maxTrade: +(process.env.MAX_TRADE_USDT || 0),       // 0 = sinirsiz
-  cooldownMin: +(process.env.COOLDOWN_MIN || 35),     // satistan sonra ayni coine girmeden once bekleme (churn'u keser)
+  cooldownMin: +(process.env.COOLDOWN_MIN || 60),     // satistan sonra ayni coine girmeden once bekleme (UZATILDI: churn/komisyon azalt)
   warmupSec: +(process.env.WARMUP_SEC || 60),          // acilista veri otursun diye alim yapmadan beklenecek sure
   maxNewPerTick: +(process.env.MAX_NEW_PER_TICK || 3), // her turda en fazla kac yeni pozisyon (acilista toplu alimi onler)
   atrExits: (process.env.ATR_EXITS || '1') !== '0',   // ATR'ye gore uyarlanan stop/hedef/trailing (volatiliteye gore)
@@ -223,8 +223,8 @@ async function placeSell(base, why, frac){
 function stopLevelOf(p){
   const ap=p.atrPct||1.5;
   const sd  = CFG.atrExits? clampN(CFG.atrStopK*ap,1.2,4.5) : 3;
-  const actT= CFG.atrExits? Math.max(1.5,1.8*ap) : 2.5;
-  const give= CFG.atrExits? Math.max(0.8,1.2*ap) : 0.8;
+  const actT= CFG.atrExits? Math.max(1.8,1.8*ap) : 2.5;
+  const give= CFG.atrExits? Math.max(1.2,1.6*ap) : 0.8;
   const beT = CFG.atrExits? Math.max(1.2,1.4*ap) : 1.2;
   const peakPct=((p.high*p.qty - p.cost - p.cost*CFG.fee*2)/p.cost)*100;
   if(peakPct>=actT) return p.entry*(1+(peakPct-give)/100);
@@ -246,7 +246,7 @@ function strategy(){
     const p=S.positions[b], px=prices[b]; if(!px) continue; if(px>p.high)p.high=px;
     const a=ana[b]||{}; const ap=p.atrPct||1.5;
     let sd,tp,actT,give,beT;
-    if(CFG.atrExits){ sd=clampN(CFG.atrStopK*ap,1.2,4.5); tp=Math.max(1.2,CFG.atrTpK*ap); actT=Math.max(1.5,1.8*ap); give=Math.max(0.8,1.2*ap); beT=Math.max(1.2,1.4*ap); }
+    if(CFG.atrExits){ sd=clampN(CFG.atrStopK*ap,1.2,4.5); tp=Math.max(1.2,CFG.atrTpK*ap); actT=Math.max(1.8,1.8*ap); give=Math.max(1.2,1.6*ap); beT=Math.max(1.2,1.4*ap); }
     else { sd=3; tp=CFG.tp1Pct; actT=2.5; give=0.8; beT=1.2; }
     const netPct=((px*p.qty - p.cost - p.cost*CFG.fee*2)/p.cost)*100;
     const peakPct=((p.high*p.qty - p.cost - p.cost*CFG.fee*2)/p.cost)*100;
