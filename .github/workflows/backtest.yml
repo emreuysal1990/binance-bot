@@ -1,0 +1,42 @@
+name: Backtest
+
+# Elle tetiklenir: GitHub > Actions > "Backtest" > "Run workflow"
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Kac gun geriye test edilsin"
+        required: true
+        default: "90"
+      univ:
+        description: "Kac coin (hacme gore en buyukler)"
+        required: true
+        default: "25"
+      interval:
+        description: "Mum araligi (15m / 5m)"
+        required: true
+        default: "15m"
+      start:
+        description: "Baslangic parasi (USDT)"
+        required: true
+        default: "100"
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kodu al
+        uses: actions/checkout@v4
+
+      - name: Node 20 kur
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Backtest calistir
+        env:
+          DAYS: ${{ github.event.inputs.days }}
+          UNIV: ${{ github.event.inputs.univ }}
+          INTERVAL: ${{ github.event.inputs.interval }}
+          START: ${{ github.event.inputs.start }}
+        run: node backtest.js
