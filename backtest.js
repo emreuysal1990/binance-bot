@@ -17,10 +17,10 @@ const CFG={
   days:+(process.env.DAYS||90), interval:(process.env.INTERVAL||'15m'), univ:+(process.env.UNIV||25),
   start:+(process.env.START||100), maxPos:+(process.env.MAX_POSITIONS||8),
   fee:+(process.env.FEE||0.001), slip:+(process.env.SLIP||0.0005),
-  entryScore:+(process.env.ENTRY_SCORE||0.20), htf:(process.env.HTF||'1')!=='0',
-  pumpMax:+(process.env.PUMP_MAX||40), tp1Frac:+(process.env.TP1_FRAC||0.5),
+  entryScore:+(process.env.ENTRY_SCORE||0.40), htf:(process.env.HTF||'1')!=='0',
+  pumpMax:+(process.env.PUMP_MAX||40), tp1Frac:+(process.env.TP1_FRAC||0.34),
   dailyLossStop:+(process.env.DAILY_LOSS_STOP||0.15), minNotional:+(process.env.MIN_NOTIONAL||10),
-  cooldownMin:+(process.env.COOLDOWN_MIN||35), maxTrade:+(process.env.MAX_TRADE_USDT||0),
+  cooldownMin:+(process.env.COOLDOWN_MIN||60), maxTrade:+(process.env.MAX_TRADE_USDT||0),
   atrExits:(process.env.ATR_EXITS||'1')!=='0', atrStopK:+(process.env.ATR_STOP_K||1.3), atrTpK:+(process.env.ATR_TP_K||2.2),
   maxAtrPct:+(process.env.MAX_ATR_PCT||6), investTarget:+(process.env.INVEST_TARGET||85)/100, maxFrac:+(process.env.MAX_POS_PCT||35)/100,
   maxNewPerTick:+(process.env.MAX_NEW_PER_TICK||3), flashDropK:+(process.env.FLASH_DROP_K||1.2), flashSpikeK:+(process.env.FLASH_SPIKE_K||1.6),
@@ -120,7 +120,7 @@ async function loadReal(){
     for(const b of Object.keys(pos)){ const p=pos[b], px=P[b].c[i]; if(px>p.high)p.high=px;
       const s=sigAt(P[b],i)||{}; const ap=p.atrPct||1.5;
       let sd,tp,actT,give,beT;
-      if(CFG.atrExits){ sd=clampN(CFG.atrStopK*ap,1.2,4.5); tp=Math.max(1.2,CFG.atrTpK*ap); actT=Math.max(1.5,1.8*ap); give=Math.max(0.8,1.2*ap); beT=Math.max(1.2,1.4*ap); }
+      if(CFG.atrExits){ sd=clampN(CFG.atrStopK*ap,1.2,4.5); tp=Math.max(1.2,CFG.atrTpK*ap); actT=Math.max(1.8,1.8*ap); give=Math.max(1.2,1.6*ap); beT=Math.max(1.2,1.4*ap); }
       else { sd=3; tp=1.5; actT=2.5; give=0.8; beT=1.2; }
       const netPct=((px*p.qty-p.cost-p.cost*fee*2)/p.cost)*100, peakPct=((p.high*p.qty-p.cost-p.cost*fee*2)/p.cost)*100;
       const ref=P[b].c[i-1], fastRet=(ref&&ref>0)?(px/ref-1)*100:0;
@@ -159,7 +159,7 @@ async function loadReal(){
   for(const b of Object.keys(pos)) sell(b,L-1,'son',1);
 
   function buy(b,i,cost,mode,ap){ const px=P[b].c[i]*(1+slip); if(cost>cash)cost=cash; if(cost<1)return; const f=cost*fee, qty=(cost-f)/px; cash-=cost; pos[b]={qty,cost,entry:px,high:px,tp1done:false,mode,atrPct:ap}; }
-  function sell(b,i,why,frac){ const p=pos[b]; if(!p)return; frac=Math.min(1,frac||1); const px=P[b].c[i]*(1-slip); const sq=p.qty*frac,cp=p.cost*frac; const gross=sq*px, net=gross-gross*fee; cash+=net; const pnl=net-cp; closed.push({b,pnl,pct:cp?pnl/cp*100:0,why,mode:p.mode});
+  function sell(b,i,why,frac){ const p=pos[b]; if(!p)return; frac=Math.min(1,frac||1); const px=P[b].c[i]*(1-slip); const sq=p.qty*frac,cp=p.cost*frac; const gross=sq*px, net=gross-gross*fee; cash+=net; const pnl=net-cp; closed.push({b,pnl,pct:cp?pnl/cp*100:0,why,mode:p.mode,i});
     if(frac<0.999){ p.qty-=sq; p.cost-=cp; p.tp1done=true; } else { delete pos[b]; cooldown[b]=times[i]+CFG.cooldownMin*60000; } }
 
   // ----- rapor -----
@@ -193,6 +193,21 @@ async function loadReal(){
             console.log(`En cok kaybettiren: ${worst[0]} ${worst[1]>=0?'+':''}$${fmt(worst[1])}`);
             console.log(`>> En iyi coin HARIC net: ${exBest>=0?'+':''}$${fmt(exBest)}  (${(exBest/CFG.start*100).toFixed(2)}%)`);
             console.log(`   (Eger bu deger eksiyse, kar tek bir sansli coine bagli demektir — guvenilmez.)`); }
+  console.log('-------------------------------------------------');
+  // TUTARLILIK: donemi ikiye bol, her yariyi ayri olc (curve-fit yakalamak icin)
+  const mid=Math.floor((warm+(L-1))/2);
+  function half(lo,hi){ let w=0,l=0,sw=0,sl=0; for(const c of closed){ if(c.i>=lo&&c.i<hi){ if(c.pnl>=0){w++;sw+=c.pnl;}else{l++;sl+=Math.abs(c.pnl);} } } const pf=sl>0?sw/sl:(sw>0?99:0); return {n:w+l,net:sw-sl,pf}; }
+  const h1=half(warm,mid), h2=half(mid,L);
+  const btc1=coins.BTC?(coins.BTC.h[mid].c/coins.BTC.h[warm].c-1)*100:null;
+  const btc2=coins.BTC?(coins.BTC.h[L-1].c/coins.BTC.h[mid].c-1)*100:null;
+  const r1=h1.net/CFG.start*100, r2=h2.net/CFG.start*100;
+  const pff=p=>p>=99?'∞':fmt(p);
+  console.log('TUTARLILIK (donem ikiye bolundu):');
+  console.log(`  Ilk yari    : bot ${r1>=0?'+':''}${fmt(r1)}%  PF ${pff(h1.pf)}  (${h1.n} islem)  vs BTC ${btc1!=null?(btc1>=0?'+':'')+fmt(btc1)+'%':'-'}`);
+  console.log(`  Ikinci yari : bot ${r2>=0?'+':''}${fmt(r2)}%  PF ${pff(h2.pf)}  (${h2.n} islem)  vs BTC ${btc2!=null?(btc2>=0?'+':'')+fmt(btc2)+'%':'-'}`);
+  const pass = h1.pf>1 && h2.pf>1 && btc1!=null && r1>btc1 && btc2!=null && r2>btc2;
+  console.log(`  GECTI Mi?   : ${pass?'EVET — iki yarida da PF>1 ve BTC ustu':'HAYIR — kural saglanmadi'}`);
+  console.log('  KURAL: iki yarida da (PF>1 VE bot getirisi > BTC) ise devam; degilse strateji emekli.');
   console.log('=================================================');
   console.log('Not: gecmis performans gelecegi GARANTI ETMEZ. Komisyon+slipaj dahil. Bu yatirim tavsiyesi degildir.');
 })();
