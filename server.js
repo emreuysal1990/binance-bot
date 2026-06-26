@@ -14,7 +14,6 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 
 // ---------- AYARLAR ----------
-// ---------- AYARLAR ----------
 const CFG = {
   mode: (process.env.MODE || 'paper').toLowerCase(),
   token: process.env.DASH_TOKEN || 'change-me',
@@ -22,33 +21,34 @@ const CFG = {
   port: +(process.env.PORT || 8080),
   startCash: +(process.env.START_CASH || 100),
   maxPositions: +(process.env.MAX_POSITIONS || 8),
-  univMax: +(process.env.UNIVERSE || 75),
+  univMax: +(process.env.UNIVERSE || 20),
   pollMs: +(process.env.POLL_MS || 6000),
-  fee: +(process.env.FEE || 0.001),                    
-  slip: +(process.env.SLIP || 0.0005),                 
-  entryScore: +(process.env.ENTRY_SCORE || 0.50),      // DEĞİŞTİ: Sadece çok güçlü trendlere gir
-  htf: (process.env.HTF || '1') !== '0',               
-  interval: (process.env.INTERVAL || '1h'),            // DEĞİŞTİ: 1h mumlarla piyasa gürültüsünü filtrele
-  pumpMax: +(process.env.PUMP_MAX || 30),              // DEĞİŞTİ: Şişmiş coinlere atlama
-  tp1Pct: +(process.env.TP1_PCT || 3.5),               // DEĞİŞTİ: Kısmi kâr hedefini büyüttük
-  tp1Frac: +(process.env.TP1_FRAC || 0.20),            // DEĞİŞTİ: Kârı alırken malın sadece %20'sini sat
+  fee: +(process.env.FEE || 0.001),                   // komisyon (tek yon). BNB ile ~0.00075
+  slip: +(process.env.SLIP || 0.0005),                // market emir slipaj tahmini (tek yon)
+  entryScore: +(process.env.ENTRY_SCORE || 0.40),     // trend skor esigi (maks 0.60) — YUKSELTILDI: sadece guclu trendler -> az+kaliteli islem
+  htf: (process.env.HTF || '1') !== '0',              // 1h + 4h yon onayi acik/kapali
+  tradeRange: (process.env.RANGE_TRADES || '0') !== '0', // YATAY (mean-reversion) islemleri KAPALI (varsayilan) — sadece trend
+  interval: (process.env.INTERVAL || '15m'),          // ana sinyal mum araligi (15m onerilir; 5m daha gurultulu)
+  pumpMax: +(process.env.PUMP_MAX || 40),             // 24s %X uzeri pompalandiysa alma
+  tp1Pct: +(process.env.TP1_PCT || 1.5),              // kismi kar seviyesi (net %) — ATR kapaliyken
+  tp1Frac: +(process.env.TP1_FRAC || 0.34),           // kismi karda satilacak oran (DUSURULDU: kalan trendi daha uzun kossun -> payoff buyur)
   dailyLossStop: +(process.env.DAILY_LOSS_STOP || 0.15),
   minNotional: +(process.env.MIN_NOTIONAL || 10),
-  maxTrade: +(process.env.MAX_TRADE_USDT || 0),        
-  cooldownMin: +(process.env.COOLDOWN_MIN || 120),     // DEĞİŞTİ: Churn ve komisyonu önlemek için bekleme süresi uzadı
-  warmupSec: +(process.env.WARMUP_SEC || 60),          
-  maxNewPerTick: +(process.env.MAX_NEW_PER_TICK || 3), 
-  atrExits: (process.env.ATR_EXITS || '1') !== '0',   
-  baseFrac: +(process.env.BASE_POS_PCT || 15)/100,    
-  maxFrac: +(process.env.MAX_POS_PCT || 35)/100,      
-  investTarget: +(process.env.INVEST_TARGET || 85)/100, 
-  riskPct: +(process.env.RISK_PCT || 0.015),          
-  atrStopK: +(process.env.ATR_STOP_K || 1.8),         // DEĞİŞTİ: Stop mesafesi rahatlatıldı
-  atrTpK: +(process.env.ATR_TP_K || 3.0),             // DEĞİŞTİ: Hedef mesafesi büyütüldü
-  maxAtrPct: +(process.env.MAX_ATR_PCT || 6),         
-  flashDropK: +(process.env.FLASH_DROP_K || 1.5),     // DEĞİŞTİ: Ani düşüş koruma esnetildi
-  flashSpikeK: +(process.env.FLASH_SPIKE_K || 2.0),   // DEĞİŞTİ: Ani yükseliş kar alma esnetildi
-  spikeEntryK: +(process.env.SPIKE_ENTRY_K || 2.0),   
+  maxTrade: +(process.env.MAX_TRADE_USDT || 0),       // 0 = sinirsiz
+  cooldownMin: +(process.env.COOLDOWN_MIN || 60),     // satistan sonra ayni coine girmeden once bekleme (UZATILDI: churn/komisyon azalt)
+  warmupSec: +(process.env.WARMUP_SEC || 60),          // acilista veri otursun diye alim yapmadan beklenecek sure
+  maxNewPerTick: +(process.env.MAX_NEW_PER_TICK || 3), // her turda en fazla kac yeni pozisyon (acilista toplu alimi onler)
+  atrExits: (process.env.ATR_EXITS || '1') !== '0',   // ATR'ye gore uyarlanan stop/hedef/trailing (volatiliteye gore)
+  baseFrac: +(process.env.BASE_POS_PCT || 15)/100,    // ortalama pozisyon = KASANIN %'si (para buyur/kuculur, gercek bakiye farkli olursa otomatik olcek)
+  maxFrac: +(process.env.MAX_POS_PCT || 35)/100,      // tek pozisyon ust siniri = kasanin %'si
+  investTarget: +(process.env.INVEST_TARGET || 85)/100, // hedef: kasanin ~%X'i yatirimda olsun (bosta nakit cok ise pozisyonu buyut)
+  riskPct: +(process.env.RISK_PCT || 0.015),          // (ATR boyutlandirma referansi)
+  atrStopK: +(process.env.ATR_STOP_K || 1.3),         // sert stop mesafesi = K x ATR (daralttik: kucuk kayip)
+  atrTpK: +(process.env.ATR_TP_K || 2.2),             // kismi kar mesafesi = K x ATR (gec al: kazanci buyut)
+  maxAtrPct: +(process.env.MAX_ATR_PCT || 6),         // ATR%'si bunu asan asiri vahsi coinleri alma
+  flashDropK: +(process.env.FLASH_DROP_K || 1.2),     // ani dusus esigi = K x ATR (acil cikis)
+  flashSpikeK: +(process.env.FLASH_SPIKE_K || 1.6),   // ani yukselis esigi = K x ATR (kar kilitle)
+  spikeEntryK: +(process.env.SPIKE_ENTRY_K || 2.0),   // dikey spike tepesinden alma
   key: process.env.BINANCE_KEY || '',
   secret: process.env.BINANCE_SECRET || '',
 };
@@ -282,7 +282,7 @@ function strategy(){
     const ap=a.atrPct||1.5, ref=prevPx[b], fr=(ref&&ref>0)?(prices[b]/ref-1)*100:0;
     if(fr >= Math.max(2.0, CFG.spikeEntryK*ap)) continue;     // dikey spike tepesinden alma
     if(a.trendUp)         cands.push({b,mode:'trend',rank:a.score});
-    else if(a.meanRevBuy) cands.push({b,mode:'range',rank:0.5+(40-a.rsi)/70});
+    else if(CFG.tradeRange && a.meanRevBuy) cands.push({b,mode:'range',rank:0.5+(40-a.rsi)/70});
   }
   cands.sort((x,y)=>y.rank-x.rank);
   let placed=0;
